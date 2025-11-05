@@ -19,6 +19,7 @@ RUN go build -o dmp main.go
 
 # 第2阶段：运行时环境
 FROM ubuntu:24.04
+RUN sed -i 's/http:\/\/archive.ubuntu.com/http:\/\/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources
 
 WORKDIR /root
 
