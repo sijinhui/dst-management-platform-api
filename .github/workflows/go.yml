@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 env:
-  REGISTRY_SERVER_ADDRESS: ghcr.io/miracleeverywhere/dst-management-platform-api
+  REGISTRY_SERVER_ADDRESS: ghcr.io/sijinhui/dst-management-platform-api
 
 jobs:
   build-binary:
