@@ -21,7 +21,7 @@ RUN go build -o dmp main.go
 FROM ubuntu:24.04
 
 RUN add-apt-repository multiverse; dpkg --add-architecture i386; apt update && \
-    apt install steamcmd -y ; \
+    apt install steamcmd lib32stdc++6 -y ; \
     sed -i 's/http:\/\/archive.ubuntu.com/http:\/\/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources
 
 WORKDIR /root
