@@ -70,7 +70,7 @@ func (g *Game) initInfo() {
 		levelDataOverridePath := fmt.Sprintf("%s/leveldataoverride.lua", worldPath)
 		modOverridesPath := fmt.Sprintf("%s/modoverrides.lua", worldPath)
 		screenName := fmt.Sprintf("DMP_%s_%s", g.clusterName, world.WorldName)
-		screenLogPath := fmt.Sprintf("%s/screen_startup.log", worldPath)
+		screenLogPath := fmt.Sprintf("%s/%s/screen_startup.log", db.CurrentDir, worldPath)
 
 		var startCmd string
 		switch g.setting.StartType {
