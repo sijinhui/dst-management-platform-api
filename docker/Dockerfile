@@ -34,7 +34,7 @@ RUN dpkg --add-architecture i386 \
     lib32gcc-s1 \
     lib32stdc++6 \
     libcurl4-gnutls-dev \
-    libcurl4t64:i386 \
+    libcurl3t64-gnutls:i386 \
     && (ln -sf /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4 /usr/lib/x86_64-linux-gnu/libcurl.so.4 || true) \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
