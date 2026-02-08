@@ -24,7 +24,7 @@ func (h *Handler) contentGet(c *gin.Context) {
 		return
 	}
 
-	if reqForm.LogType == "game" || reqForm.LogType == "chat" {
+	if reqForm.LogType == "game" || reqForm.LogType == "chat" || reqForm.LogType == "screen" {
 		if reqForm.RoomID == 0 {
 			c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 			return

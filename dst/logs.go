@@ -17,6 +17,13 @@ func (g *Game) getLogContent(logType string, id, lines int) []string {
 		}
 		logPath = fmt.Sprintf("%s/server_log.txt", world.worldPath)
 		logger.Logger.Debug(logPath)
+	case "screen":
+		world, err := g.getWorldByID(id)
+		if err != nil {
+			return []string{}
+		}
+		logPath = fmt.Sprintf("%s/screen_startup.log", world.worldPath)
+		logger.Logger.Debug(logPath)
 	case "chat":
 		for _, world := range g.worldSaveData {
 			if g.worldUpStatus(world.ID) {
