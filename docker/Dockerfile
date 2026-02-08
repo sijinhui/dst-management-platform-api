@@ -26,16 +26,16 @@ WORKDIR /root
 COPY --from=build /app/dmp /root/dmp
 COPY --from=build /app/docker/entry-point.sh /root/entry-point.sh
 
-RUN apt-get update && apt-get install -y \
+RUN dpkg --add-architecture i386 \
+    && apt-get update \
+    && apt-get install -y \
     screen \
     wget \
     lib32gcc-s1 \
     lib32stdc++6 \
     libcurl4-gnutls-dev \
-    libcurl4:i386 \
-    libgcc-s1:i386 \
-    libstdc++6:i386 \
-    && ln -s /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4 /usr/lib/x86_64-linux-gnu/libcurl.so.4 || true \
+    libcurl4t64:i386 \
+    && (ln -sf /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4 /usr/lib/x86_64-linux-gnu/libcurl.so.4 || true) \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && chmod +x /root/dmp /root/entry-point.sh \
