@@ -13,7 +13,7 @@ function error_exit() {
 trap error_exit ERR
 
 cd steamcmd || error_exit
-./steamcmd.sh +login anonymous +force_install_dir ~/dst +app_update 343050 validate +quit || error_exit
+./steamcmd.sh +force_install_dir ~/dst +login anonymous +app_update 343050 validate +quit || error_exit
 
 cd || true
 
