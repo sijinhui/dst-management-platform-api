@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func OnlinePlayerGet(interval int, uidMapEnable bool) {
+func OnlinePlayerGet(interval, saveTime int, uidMapEnable bool) {
 	roomsBasic, err := DBHandler.roomDao.GetRoomBasic()
 	if err != nil {
 		logger.Logger.Error("查询数据库失败，添加定时任务失败", "err", err)
@@ -74,9 +74,10 @@ func OnlinePlayerGet(interval int, uidMapEnable bool) {
 
 					db.PlayersStatisticMutex.Lock()
 
-					if len(db.PlayersStatistic[rbs.RoomID]) > (86400 / interval) {
-						// 只保留一天的数据量
-						db.PlayersStatistic[rbs.RoomID] = append(db.PlayersStatistic[rbs.RoomID][:0], db.PlayersStatistic[rbs.RoomID][1:]...)
+					if len(db.PlayersStatistic[rbs.RoomID]) > parsePlayerInfoSaveTime(saveTime) {
+						// db.PlayersStatistic[rbs.RoomID] = append(db.PlayersStatistic[rbs.RoomID][:0], db.PlayersStatistic[rbs.RoomID][1:]...)
+						db.PlayersStatistic[rbs.RoomID] = db.PlayersStatistic[rbs.RoomID][1:]
+
 					}
 					db.PlayersStatistic[rbs.RoomID] = append(db.PlayersStatistic[rbs.RoomID], Players)
 
@@ -103,10 +104,9 @@ func SystemMetricsGet(maxHour int) {
 	}
 
 	if len(db.SystemMetrics) > maxHour*60 {
-		db.SystemMetrics = append(db.SystemMetrics[:0], sysMetrics)
-	} else {
-		db.SystemMetrics = append(db.SystemMetrics, sysMetrics)
+		db.SystemMetrics = db.SystemMetrics[1:]
 	}
+	db.SystemMetrics = append(db.SystemMetrics, sysMetrics)
 }
 
 func GameUpdate(enable bool, restart bool) {
@@ -146,11 +146,11 @@ func GameUpdate(enable bool, restart bool) {
 			for _, rbs := range *roomsBasic {
 				// 2. 如果房间未激活，则跳过重启
 				if !rbs.Status {
-					logger.Logger.DebugF("房间%s(%d)未激活，跳过重启", rbs.RoomName, rbs.RoomID)
+					logger.Logger.Debugf("房间%s(%d)未激活，跳过重启", rbs.RoomName, rbs.RoomID)
 					continue
 				}
 
-				logger.Logger.DebugF("开始重启房间：%s(%d)", rbs.RoomName, rbs.RoomID)
+				logger.Logger.Debugf("开始重启房间：%s(%d)", rbs.RoomName, rbs.RoomID)
 
 				// 3. 重启房间内所有的世界
 				room, worlds, roomSetting, err := fetchGameInfo(rbs.RoomID)
@@ -162,7 +162,7 @@ func GameUpdate(enable bool, restart bool) {
 				_ = game.StopAllWorld()
 				_ = game.StartAllWorld()
 
-				logger.Logger.DebugF("重启房间完成：%s(%d)，休眠5秒", rbs.RoomName, rbs.RoomID)
+				logger.Logger.Debugf("重启房间完成：%s(%d)，休眠5秒", rbs.RoomName, rbs.RoomID)
 
 				time.Sleep(5 * time.Second)
 			}

@@ -71,6 +71,8 @@ func (g *Game) dsModsSetup() error {
 func (g *Game) downloadMod(id int, fileURL string) (error, int64) {
 	atomic.AddInt32(&db.ModDownloadExecuting, 1)
 	defer atomic.AddInt32(&db.ModDownloadExecuting, -1)
+	modAcfMutex.Lock()
+	defer modAcfMutex.Unlock()
 
 	var (
 		err     error
@@ -88,6 +90,7 @@ func (g *Game) downloadMod(id int, fileURL string) (error, int64) {
 		// 3. 读取游戏acf文件和dmp_files的acf文件，更新当前mod-id所对应的所有字段
 
 		// 1
+		logger.Logger.Debugf("正在下载模组：%d", id)
 		downloadCmd := g.generateModDownloadCmd(id)
 		logger.Logger.Debug(downloadCmd)
 		err = utils.BashCMD(downloadCmd)
@@ -98,6 +101,7 @@ func (g *Game) downloadMod(id int, fileURL string) (error, int64) {
 		time.Sleep(500 * time.Millisecond)
 
 		// 2
+		logger.Logger.Debugf("正在移动模组：%d", id)
 		err = g.removeGameOldMod(id)
 		if err != nil {
 			logger.Logger.Error("移动模组失败", "err", err)
@@ -114,6 +118,7 @@ func (g *Game) downloadMod(id int, fileURL string) (error, int64) {
 
 		// 3
 		gameAcfPath := fmt.Sprintf("dst/ugc_mods/%s/%s/appworkshop_322330.acf", g.clusterName, g.worldSaveData[0].WorldName)
+		logger.Logger.Debugf("正在处理acf文件：%s", gameAcfPath)
 		gameAcfContent, err := utils.ReadLinesToSlice(gameAcfPath)
 		if err != nil {
 			gameAcfContent = []string{}
@@ -136,8 +141,8 @@ func (g *Game) downloadMod(id int, fileURL string) (error, int64) {
 		time.Sleep(500 * time.Millisecond)
 
 		modSize, err = utils.GetDirSize(fmt.Sprintf("dst/ugc_mods/%s/%s/content/322330/%d", g.clusterName, g.worldSaveData[0].WorldName, id))
-		logger.Logger.DebugF("模组路径为%s", fmt.Sprintf("dst/ugc_mods/%s/%s/content/322330/%d", g.clusterName, g.worldSaveData[0].WorldName, id))
-		logger.Logger.DebugF("模组大小为%d", modSize)
+		logger.Logger.Debugf("模组路径为%s", fmt.Sprintf("dst/ugc_mods/%s/%s/content/322330/%d", g.clusterName, g.worldSaveData[0].WorldName, id))
+		logger.Logger.Debugf("模组大小为%d", modSize)
 		if err != nil {
 			logger.Logger.Error("获取模组大小失败", "err", err)
 			return err, modSize
@@ -193,10 +198,7 @@ func (g *Game) generateModCopyCmd(id int) string {
 }
 
 func (g *Game) processAcf(id int) error {
-	g.acfMutex.Lock()
-	defer g.acfMutex.Unlock()
-
-	acfID := strconv.Itoa(id)
+	acfModID := strconv.Itoa(id)
 
 	dmpAcfPath := fmt.Sprintf("%s/mods/ugc/%s/steamapps/workshop/appworkshop_322330.acf", utils.DmpFiles, g.clusterName)
 	gameAcfPath := fmt.Sprintf("dst/ugc_mods/%s/%s/appworkshop_322330.acf", g.clusterName, g.worldSaveData[0].WorldName)
@@ -207,59 +209,39 @@ func (g *Game) processAcf(id int) error {
 		return err
 	}
 
-	dmpAcfContent, err := os.ReadFile(dmpAcfPath)
+	dmpAcfParser, err := utils.NewParser(dmpAcfPath)
 	if err != nil {
 		return err
 	}
+
 	gameAcfContent, err := os.ReadFile(gameAcfPath)
 	if err != nil {
 		return err
 	}
 
-	dmpAcfParser := NewAcfParser(string(dmpAcfContent))
-
 	var writtenContent string
 
 	if len(gameAcfContent) == 0 {
 		// 如果游戏mod目录没有acf文件，直接使用dmp下载的acf文件
-		writtenContent = dmpAcfParser.FileContent()
+		writtenContent = strings.Join(dmpAcfParser.Format(), "\n")
 	} else {
 		// 如果游戏mod目录含有acf文件，处理游戏acf文件
-		gameAcfParser := NewAcfParser(string(gameAcfContent))
-		var (
-			gameAcfTargetIndex int
-			hasMod             bool
-		)
-
-		if len(gameAcfParser.AppWorkshop.WorkshopItemsInstalled) > len(gameAcfParser.AppWorkshop.WorkshopItemDetails) {
-			// 防止index溢出导致接口500
-			return fmt.Errorf("acf文件异常，WorkshopItemsInstalled与WorkshopItemDetails长度不一致")
+		gameAcfParser, err := utils.NewParser(gameAcfPath)
+		if err != nil {
+			return err
 		}
 
-		for index, i := range gameAcfParser.AppWorkshop.WorkshopItemsInstalled {
-			if i.ID == acfID {
-				gameAcfTargetIndex = index
-				hasMod = true
-			}
-		}
-		if hasMod {
-			for index, mod := range dmpAcfParser.AppWorkshop.WorkshopItemsInstalled {
-				if strconv.Itoa(id) == mod.ID {
-					gameAcfParser.AppWorkshop.WorkshopItemsInstalled[gameAcfTargetIndex] = dmpAcfParser.AppWorkshop.WorkshopItemsInstalled[index]
-					gameAcfParser.AppWorkshop.WorkshopItemDetails[gameAcfTargetIndex] = dmpAcfParser.AppWorkshop.WorkshopItemDetails[index]
-				}
-			}
-		} else {
-			for index, mod := range dmpAcfParser.AppWorkshop.WorkshopItemsInstalled {
-				if strconv.Itoa(id) == mod.ID {
-					gameAcfParser.AppWorkshop.WorkshopItemsInstalled = append(gameAcfParser.AppWorkshop.WorkshopItemsInstalled, dmpAcfParser.AppWorkshop.WorkshopItemsInstalled[index])
-					gameAcfParser.AppWorkshop.WorkshopItemDetails = append(gameAcfParser.AppWorkshop.WorkshopItemDetails, dmpAcfParser.AppWorkshop.WorkshopItemDetails[index])
-				}
-			}
-
+		newMod, err := dmpAcfParser.GetWorkshopItemsInstalled(acfModID)
+		if err != nil {
+			return err
 		}
 
-		writtenContent = gameAcfParser.FileContent()
+		err = gameAcfParser.AddWorkshopItemsInstalled(newMod)
+		if err != nil {
+			return err
+		}
+
+		writtenContent = strings.Join(gameAcfParser.Format(), "\n")
 	}
 
 	for _, world := range g.worldSaveData {
@@ -315,23 +297,23 @@ func (g *Game) getDownloadedMods() *[]DownloadedMod {
 		return &downloadedMods
 	}
 
-	gameAcfContent, err := os.ReadFile(gameAcfPath)
+	gameAcfParser, err := utils.NewParser(gameAcfPath)
 	if err != nil {
+		logger.Logger.Warnf("获取acf文件失败：%v", err)
 		return &downloadedMods
 	}
 
-	if len(gameAcfContent) != 0 {
-		gameAcfParser := NewAcfParser(string(gameAcfContent))
-		for _, mod := range gameAcfParser.AppWorkshop.WorkshopItemsInstalled {
-			id, err := strconv.Atoi(mod.ID)
-			if err != nil {
-				id = 0
-			}
-			downloadedMods = append(downloadedMods, DownloadedMod{
-				ID:        id,
-				LocalSize: mod.Size,
-			})
+	mods := gameAcfParser.ListWorkshopItemsInstalled()
+	for _, mod := range mods {
+		id, err := strconv.Atoi(mod.Name)
+		if err != nil {
+			id = 0
 		}
+
+		downloadedMods = append(downloadedMods, DownloadedMod{
+			ID:        id,
+			LocalSize: mod.List["size"],
+		})
 	}
 
 	return &downloadedMods
@@ -379,7 +361,7 @@ func (g *Game) getModConfigureOptionsValues(worldID, modID int, ugc bool) (*ModO
 	modORParser := NewModORParser()
 	defer modORParser.close()
 
-	logger.Logger.DebugF("ugc is %t", ugc)
+	logger.Logger.Debugf("ugc is %t", ugc)
 
 	var modORContent string
 	if g.room.ModInOne {
@@ -667,25 +649,18 @@ func (g *Game) deleteMod(modID int, fileURL string) error {
 				logger.Logger.Error("acf文件不存在", "path", gameAcfPath)
 				return err
 			}
-			gameAcfContent, err := os.ReadFile(gameAcfPath)
+
+			gameAcfParser, err := utils.NewParser(gameAcfPath)
 			if err != nil {
 				return err
 			}
 
-			gameAcfParser := NewAcfParser(string(gameAcfContent))
-			for index, mod := range gameAcfParser.AppWorkshop.WorkshopItemsInstalled {
-				if mod.ID == acfID {
-					gameAcfParser.AppWorkshop.WorkshopItemsInstalled = append(gameAcfParser.AppWorkshop.WorkshopItemsInstalled[:index], gameAcfParser.AppWorkshop.WorkshopItemsInstalled[index+1:]...)
-					break
-				}
-			}
-			for index, mod := range gameAcfParser.AppWorkshop.WorkshopItemDetails {
-				if mod.ID == acfID {
-					gameAcfParser.AppWorkshop.WorkshopItemDetails = append(gameAcfParser.AppWorkshop.WorkshopItemDetails[:index], gameAcfParser.AppWorkshop.WorkshopItemDetails[index+1:]...)
-				}
+			err = gameAcfParser.RemoveWorkshopItemsInstalled(acfID)
+			if err != nil {
+				return err
 			}
 
-			writtenContent := gameAcfParser.FileContent()
+			writtenContent := strings.Join(gameAcfParser.Format(), "\n")
 			err = utils.TruncAndWriteFile(gameAcfPath, writtenContent)
 			if err != nil {
 				return err
