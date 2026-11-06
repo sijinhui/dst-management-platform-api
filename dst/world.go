@@ -2,9 +2,12 @@ package dst
 
 import (
 	"bufio"
+	"dst-management-platform-api/cache"
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
+	"dst-management-platform-api/webhook"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 type worldSaveData struct {
@@ -73,7 +76,7 @@ func (g *Game) createWorlds() error {
 	// 清理删除的世界
 	fileSystemWorlds, err := utils.GetDirs(g.clusterPath, false)
 	if err != nil {
-		logger.Logger.Warn("获取世界目录列表失败", "err", err)
+		logger.Logger.Warnf("获取世界目录列表失败: %v", err)
 		return nil
 	}
 	for _, fileSystemWorld := range fileSystemWorlds {
@@ -81,13 +84,13 @@ func (g *Game) createWorlds() error {
 			// 清理文件
 			err = utils.RemoveDir(fmt.Sprintf("%s/%s", g.clusterPath, fileSystemWorld))
 			if err != nil {
-				logger.Logger.Warn("清理世界失败，删除文件失败", "err", err)
+				logger.Logger.Warnf("清理世界失败，删除文件失败: %v", err)
 			}
 			// 清理screen
-			cmd := fmt.Sprintf("screen -X -S DMP_Cluster_%d_%s quit", g.room.ID, fileSystemWorld)
+			cmd := fmt.Sprintf("screen -X -S %s quit", utils.ShellQuote(fmt.Sprintf("DMP_Cluster_%d_%s", g.room.ID, fileSystemWorld)))
 			err = utils.BashCMD(cmd)
 			if err != nil {
-				logger.Logger.Warn("清理世界失败，清理SCREEN失败", "err", err)
+				logger.Logger.Warnf("清理世界失败，清理SCREEN失败: %v", err)
 			}
 		}
 	}
@@ -107,7 +110,7 @@ func (g *Game) worldUpStatus(id int) bool {
 		return false
 	}
 
-	cmd := fmt.Sprintf("ps -ef | grep %s | grep -v grep", world.screenName)
+	cmd := fmt.Sprintf("ps -ef | grep %s | grep -v grep", utils.ShellQuote(world.screenName))
 	err = utils.BashCMD(cmd)
 	if err != nil {
 		stat = false
@@ -135,7 +138,7 @@ func (g *Game) worldPerformanceStatus(id int) PerformanceStatus {
 
 	diskUsed, err := utils.GetDirSize(world.worldPath)
 	if err != nil {
-		logger.Logger.Warn("获取世界磁盘使用量失败", "world", world.ID, "err", err)
+		logger.Logger.Warnf("获取世界磁盘使用量失败: %v, 世界id: %d", err, world.ID)
 		diskUsed = 0
 	}
 
@@ -145,31 +148,31 @@ func (g *Game) worldPerformanceStatus(id int) PerformanceStatus {
 		return performanceStatus
 	}
 
-	cmd := fmt.Sprintf("ps -ef | grep dontstarve_dedicated_server_nullrenderer | grep Cluster_%d | grep %s | grep -v luajit | grep -vi screen | awk '{print $2}'", g.room.ID, world.WorldName)
+	cmd := fmt.Sprintf("ps -ef | grep dontstarve_dedicated_server_nullrenderer | grep Cluster_%d | grep %s | grep -v luajit | grep -vi screen | awk '{print $2}'", g.room.ID, utils.ShellQuote(world.WorldName))
 	logger.Logger.Debug(cmd)
 	out, _, _ := utils.BashCMDOutput(cmd)
 	logger.Logger.Debug(out)
 
 	if len(out) < 2 {
-		logger.Logger.Warn("获取世界PID失败", "world", world.ID)
+		logger.Logger.Warnf("获取世界PID失败, 世界id: %d", world.ID)
 		return performanceStatus
 	}
 
 	pid, err := strconv.Atoi(strings.TrimSpace(out))
 	if err != nil {
-		logger.Logger.Warn("获取世界PID失败", "world", world.ID, "err", err)
+		logger.Logger.Warnf("获取世界PID失败, id: %d, err: %v", world.ID, err)
 		return performanceStatus
 	}
 
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
-		logger.Logger.Warn("获取世界进程失败", "world", world.ID, "err", err)
+		logger.Logger.Warnf("获取世界进程失败, world: %v, err: %v", world.ID, err)
 		return performanceStatus
 	}
 
 	cpu, err := p.Percent(time.Millisecond * 100)
 	if err != nil {
-		logger.Logger.Warn("获取世界CPU失败", "world", world.ID, "err", err)
+		logger.Logger.Warnf("获取世界CPU失败, world: %v, err: %v", world.ID, err)
 		return performanceStatus
 	}
 
@@ -177,7 +180,7 @@ func (g *Game) worldPerformanceStatus(id int) PerformanceStatus {
 
 	mem, err := p.MemoryPercent()
 	if err != nil {
-		logger.Logger.Warn("获取世界内存使用率失败", "world", world.ID, "err", err)
+		logger.Logger.Warnf("获取世界内存使用率失败, world: %v, err: %v", world.ID, err)
 		return performanceStatus
 	}
 
@@ -185,7 +188,7 @@ func (g *Game) worldPerformanceStatus(id int) PerformanceStatus {
 
 	memSize, err := p.MemoryInfo()
 	if err != nil {
-		logger.Logger.Warn("获取世界内存使用量失败", "world", world.ID, "err", err)
+		logger.Logger.Warnf("获取世界内存使用量失败, world: %v, err: %v", world.ID, err)
 		return performanceStatus
 	}
 
@@ -203,32 +206,29 @@ func (g *Game) startWorld(id int) error {
 	g.acfMutex.Lock()
 	defer g.acfMutex.Unlock()
 	defer func() {
-		err := utils.RemoveDir(fmt.Sprintf("%s/mods/ugc/%s", utils.DmpFiles, g.clusterName))
+		err := utils.RemoveDir(fmt.Sprintf("%s/mods/ugc/%s", constant.DmpFiles, g.clusterName))
 		if err != nil {
-			logger.Logger.Warn("删除临时模组失败", "err", err)
+			logger.Logger.Warnf("删除临时模组失败, err: %v", err)
 		}
 	}()
-
-	// 给klei擦钩子，检查so文件
-	if !utils.CompareFileSHA256("dst/bin/lib32/steamclient.so", "steamcmd/linux32/steamclient.so") {
-		logger.Logger.Debug("发现so文件异常，开始替换")
-		replaceDSTSOFile()
-	}
 
 	var (
 		err   error
 		world *worldSaveData
 	)
 
-	// 如果正在运行，则跳过
-	if g.worldUpStatus(id) {
-		logger.Logger.Info("当前世界正在运行中，跳过", "世界ID", id)
-		return nil
+	// 给klei擦钩子，检查so文件
+	if cache.OsType != "darwin" {
+		if !utils.CompareFileSHA256("dst/bin/lib32/steamclient.so", "steamcmd/linux32/steamclient.so") {
+			logger.Logger.Debug("发现so文件异常，开始替换")
+			replaceDSTSOFile()
+		}
 	}
 
-	world, err = g.getWorldByID(id)
-	if err != nil {
-		return err
+	// 如果正在运行，则跳过
+	if g.worldUpStatus(id) {
+		logger.Logger.Infof("当前世界正在运行中，跳过，世界ID：%d", id)
+		return nil
 	}
 
 	err = g.dsModsSetup()
@@ -236,7 +236,16 @@ func (g *Game) startWorld(id int) error {
 		return err
 	}
 
+	world, err = g.getWorldByID(id)
+	if err != nil {
+		return err
+	}
+
 	logger.Logger.Debug(world.startCmd)
+	if !utils.IsSafeString(world.WorldName) {
+		logger.Logger.Warnf("世界名 %s 可能存在注入风险", world.WorldName)
+		return fmt.Errorf("世界名 %s 可能存在注入风险", world.WorldName)
+	}
 	err = utils.BashCMD(world.startCmd)
 
 	return err
@@ -247,10 +256,12 @@ func (g *Game) startAllWorld() error {
 
 	var err error
 
-	// 给klei擦钩子，检查so文件
-	if !utils.CompareFileSHA256("dst/bin/lib32/steamclient.so", "steamcmd/linux32/steamclient.so") {
-		logger.Logger.Debug("发现so文件异常，开始替换")
-		replaceDSTSOFile()
+	if cache.OsType != "darwin" {
+		// 给klei擦钩子，检查so文件
+		if !utils.CompareFileSHA256("dst/bin/lib32/steamclient.so", "steamcmd/linux32/steamclient.so") {
+			logger.Logger.Debug("发现so文件异常，开始替换")
+			replaceDSTSOFile()
+		}
 	}
 
 	err = g.dsModsSetup()
@@ -261,7 +272,7 @@ func (g *Game) startAllWorld() error {
 	for _, world := range g.worldSaveData {
 		// 如果正在运行，则跳过
 		if g.worldUpStatus(world.ID) {
-			logger.Logger.Info("当前世界正在运行中，跳过", "世界ID", world.ID)
+			logger.Logger.Infof("当前世界正在运行中，跳过，世界ID：%d", world.ID)
 			continue
 		}
 
@@ -271,6 +282,11 @@ func (g *Game) startAllWorld() error {
 			return err
 		}
 	}
+
+	webhook.Snd.Send(webhook.EventGameStart, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+	})
 
 	return nil
 }
@@ -283,15 +299,15 @@ func (g *Game) stopWorld(id int) error {
 
 	err = utils.ScreenCMD("c_shutdown()", world.screenName)
 	if err != nil {
-		logger.Logger.Info("执行ScreenCMD失败，可能是未运行", "msg", err, "cmd", "c_shutdown()")
+		logger.Logger.Infof("执行ScreenCMD失败，可能是未运行，忽略: %v, cmd: c_shutdown()", err)
 	}
 
 	time.Sleep(1 * time.Second)
 
-	killCMD := fmt.Sprintf("screen -S %s -X quit", world.screenName)
+	killCMD := fmt.Sprintf("screen -S %s -X quit", utils.ShellQuote(world.screenName))
 	err = utils.BashCMD(killCMD)
 	if err != nil {
-		logger.Logger.Info("结束进程失败，可能是未运行", "err", err)
+		logger.Logger.Infof("结束进程失败，可能是未运行，忽略: %v", err)
 	}
 
 	return nil
@@ -304,6 +320,11 @@ func (g *Game) stopAllWorld() error {
 			return err
 		}
 	}
+
+	webhook.Snd.Send(webhook.EventGameStop, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+	})
 
 	return nil
 }
@@ -328,9 +349,9 @@ func (g *Game) consoleCmd(cmd string, id int) error {
 }
 
 func (g *Game) getWorldByID(id int) (*worldSaveData, error) {
-	for _, world := range g.worldSaveData {
-		if world.ID == id {
-			return &world, nil
+	for i := range g.worldSaveData {
+		if g.worldSaveData[i].ID == id {
+			return &g.worldSaveData[i], nil
 		}
 	}
 
@@ -361,7 +382,7 @@ func (g *Game) getOnlinePlayerList(id int) ([]string, error) {
 		return []string{}, err
 	}
 
-	listScreenCmd := fmt.Sprintf("screen -S \"%s\" -p 0 -X stuff \"for i, v in ipairs(TheNet:GetClientTable()) do  print(string.format(\\\"playerlist %%s [%%d] %%s <-@dmp@-> %%s <-@dmp@-> %%s\\\", 99999999, i-1, v.userid, v.name, v.prefab )) end$(printf \\\\r)\"\n", world.screenName)
+	listScreenCmd := fmt.Sprintf("screen -S %s -p 0 -X stuff \"for i, v in ipairs(TheNet:GetClientTable()) do local col = v.colour; local cstr = col and string.format('%%d,%%d,%%d,%%d', (col[1] or 0)*255, (col[2] or 0)*255, (col[3] or 0)*255, (col[4] or 1)*255) or 'nil'; print(string.format(\\\"playerlist %%s [%%d] %%s <-@dmp@-> %%s <-@dmp@-> %%s <-@dmp@-> %%s <-@dmp@-> %%s <-@dmp@-> %%s <-@dmp@-> %%s\\\", 99999999, i-1, tostring(v.userid), tostring(v.name), tostring(v.prefab), tostring(v.netid), tostring(v.netscore), tostring(v.playerage), cstr)) end$(printf \\\\r)\"\n", utils.ShellQuote(world.screenName))
 	err = utils.BashCMD(listScreenCmd)
 	if err != nil {
 		return []string{}, err
@@ -377,8 +398,14 @@ func (g *Game) getOnlinePlayerList(id int) ([]string, error) {
 	return readPlayerListFromEnd(logPath)
 }
 
+var (
+	playerListPattern = regexp.MustCompile(`playerlist 99999999 \[[0-9]+\] (KU_.+) <-@dmp@-> (.*?) <-@dmp@-> (.*?) <-@dmp@-> (.*?) <-@dmp@-> (.*?) <-@dmp@-> (.*?) <-@dmp@-> (.*)`)
+	hostPattern       = regexp.MustCompile(`\[Host]`)
+	worldLogTimeRegex = regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}]`)
+)
+
 func readPlayerListFromEnd(logPath string) ([]string, error) {
-	const bufferSize = 1024 * 4 // 4KB buffer
+	const bufferSize = 1024 * 64 // 64KB buffer
 
 	// 打开文件
 	file, err := os.Open(logPath)
@@ -388,7 +415,7 @@ func readPlayerListFromEnd(logPath string) ([]string, error) {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			logger.Logger.Error("文件关闭失败", "err", err)
+			logger.Logger.Errorf("文件关闭失败, err: %v", err)
 		}
 	}(file)
 
@@ -443,22 +470,19 @@ func readPlayerListFromEnd(logPath string) ([]string, error) {
 		return nil, fmt.Errorf("keyword not found in the file")
 	}
 
-	// 正则表达式匹配模式
-	pattern := `playerlist 99999999 \[[0-9]+\] (KU_.+) <-@dmp@-> (.*) <-@dmp@-> (.+)?`
-	re := regexp.MustCompile(pattern)
-
 	var players []string
 
 	// 查找匹配的行并提取所需字段
 	for _, line := range linesAfterKeyword {
-		if matches := re.FindStringSubmatch(line); matches != nil {
+		if matches := playerListPattern.FindStringSubmatch(line); matches != nil {
 			// 检查是否包含 [Host]
-			if !regexp.MustCompile(`\[Host]`).MatchString(line) {
-				uid := strings.ReplaceAll(matches[1], "\t", "")
-				nickName := strings.ReplaceAll(matches[2], "\t", "")
-				prefab := strings.ReplaceAll(matches[3], "\t", "")
-				player := uid + "<-@dmp@->" + nickName + "<-@dmp@->" + prefab
-				players = append(players, player)
+			if !hostPattern.MatchString(line) {
+				// 捕获组依次为：uid、昵称、角色、netid、netscore、玩家存活天数、颜色
+				fields := make([]string, 0, len(matches)-1)
+				for _, match := range matches[1:] {
+					fields = append(fields, strings.ReplaceAll(match, "\t", ""))
+				}
+				players = append(players, strings.Join(fields, "<-@dmp@->"))
 			}
 		}
 	}
@@ -481,42 +505,51 @@ func (g *Game) getLastAliveTime(id int) (string, error) {
 }
 
 func getWorldLastTime(logfile string) (string, error) {
-	// 获取日志文件中的list
+	// 正常情况下时间戳就在日志末尾附近，只读取最后若干行即可。
+	// 如果尾部窗口中没有时间戳，再回退到全文件扫描，保持原有行为。
+	const tailLines = 2048
+
+	if lastTime, ok := findLastWorldTime(utils.GetFileLastNLines(logfile, tailLines)); ok {
+		return lastTime, nil
+	}
+
 	file, err := os.Open(logfile)
 	if err != nil {
-		logger.Logger.Error("打开文件失败", "err", err, "file", logfile)
+		logger.Logger.Errorf("打开文件失败, err: %v, file: %v", err, logfile)
 		return "", err
 	}
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			logger.Logger.Error("关闭文件失败", "err", err, "file", logfile)
+			logger.Logger.Errorf("关闭文件失败, err: %v, file: %v", err, logfile)
 		}
 	}(file)
 
-	// 逐行读取文件
 	scanner := bufio.NewScanner(file)
 	var lines []string
-	timeRegex := regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}]`)
-
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		logger.Logger.Error("文件scan失败", "err", err)
+		logger.Logger.Errorf("文件scan失败, err: %v", err)
 		return "", err
 	}
-	// 反向遍历行
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := lines[i]
-		// 将行添加到结果切片
-		match := timeRegex.FindString(line)
-		if match != "" {
-			// 去掉方括号
-			lastTime := strings.Trim(match, "[]")
-			return lastTime, nil
-		}
+
+	if lastTime, ok := findLastWorldTime(lines); ok {
+		return lastTime, nil
 	}
 
 	return "", fmt.Errorf("没有找到日志时间戳")
+}
+
+// findLastWorldTime 从后往前查找最后一条带时间戳的日志行
+func findLastWorldTime(lines []string) (string, bool) {
+	for i := len(lines) - 1; i >= 0; i-- {
+		match := worldLogTimeRegex.FindString(lines[i])
+		if match != "" {
+			return strings.Trim(match, "[]"), true
+		}
+	}
+
+	return "", false
 }

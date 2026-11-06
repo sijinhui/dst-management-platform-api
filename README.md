@@ -9,6 +9,10 @@
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/miracleEverywhere/dst-management-platform-api)
 [![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/miracleEverywhere/dst-management-platform-api)
 
+![Linux](https://img.shields.io/badge/Linux-完整支持-brightgreen)
+![MacOS](https://img.shields.io/badge/MacOS-完整支持-brightgreen)
+![Windows](https://img.shields.io/badge/Windows-WSL%E6%94%AF%E6%8C%81-brightgreen)
+
 <div>
     <img src="docs/images/dmp.svg" height="200" alt="DMP"/>
     <h3>:sparkling_heart: 支持多房间、多用户、多权限管理 :sparkling_heart:</h3>
@@ -20,11 +24,9 @@
 
 ## :strawberry: 详细文档
 
-**项目主页请前往** [https://miraclesses.top](https://miraclesses.top)  
-主页包含作者和用户制作的视频教程、在线预览等
+**项目主页请前往** [https://dmp.miraclesses.top](https://dmp.miraclesses.top)
 
-**项目文档请前往** [https://docs.miraclesses.top](https://miraclesses.top)  
-文档包含快速开始、详细文档等，萌新大佬均可无痛阅读
+**项目文档请前往** [https://docs.miraclesses.top](https://miraclesses.top)
 
 ---
 
@@ -36,9 +38,23 @@
 
 ![https://github.com/miracleEverywhere/dst-management-platform-api/graphs/contributors](https://contrib.rocks/image?repo=miracleEverywhere/dst-management-platform-api)
 
+感谢以下群友对AI聊天知识库的贡献
+<div>
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=2446583163&s=100" style="width: 60px; height: 60px;" alt="2446583163">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=1770072201&s=100" style="width: 60px; height: 60px;" alt="1770072201">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=1643924918&s=100" style="width: 60px; height: 60px;" alt="1643924918">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=1810655449&s=100" style="width: 60px; height: 60px;" alt="1810655449">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=2765013630&s=100" style="width: 60px; height: 60px;" alt="2765013630">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=3230742618&s=100" style="width: 60px; height: 60px;" alt="3230742618">
+</div>
+
+
+
 ---
 
 ## :cherries: 推广
+
+### 汉堡云
 
 [汉堡云服务器](https://hbyidc.com/recommend/OKkxTzgMP6k7)，专为饥荒打造！官方合作商「汉堡云」带来高性能游戏服务器，首月低至6折！
 
@@ -51,6 +67,19 @@
 
 [![作者推荐](docs/images/zh/hbyun.png)](https://hbyidc.com/recommend/OKkxTzgMP6k7)
 
+### 星云工艺
+
+[星云工艺 · NebulaCraft](https://www.nebulacraft.cn/games/dst?utm_source=dmp-readme&utm_medium=referral&utm_campaign=readme-ad)，饥荒联机版游戏云面板服。**不用自己部署 DMP**：开通后直接使用房间管理面板，多世界 / 创意工坊模组 / 每日备份全部标配，**¥14/月起**！ <sub>DMP 合作推广</sub>
+
+- **机型分档**：E5-2680 v4 / Xeon 8272CL / Ryzen 9 7950X / 9950X 等，2 / 4 / 6 / 8 人档，预算优先或追求单核性能都能选
+- **多世界开服**：森林 + 洞穴开箱即用，可加购扩到最多 6 个世界，海难、火山、猪镇自由搭配
+- **模组与存档**：创意工坊模组一键启用（节点缓存加速）；ZIP 存档一键导入，配置 / 模组 / 地图一起迁移
+- **运维与保障**：镇江 / 宁波 BGP 三线 · 不限制核心，不限制内存 · SLA 99.95% · 开通 24 小时内如有不满意无理由全额退款
+
+**优惠码**：`DMPNEBULA`（首月6折） [点我立即开服](https://www.nebulacraft.cn/auth/register?aff=E288GU3C)
+
+[![星云工艺 - NebulaCraft 饥荒联机版游戏云](https://www.nebulacraft.cn/og-cover.jpg?v=20261026)](https://www.nebulacraft.cn/auth/register?aff=E288GU3C)
+
 ---
 
 ## :balloon: 截图
@@ -59,11 +88,19 @@
 
 ![控制面板](docs/images/zh/dashboard.png)
 
+![平台工具](docs/images/zh/map.png)
+
 ![游戏设置](docs/images/zh/game.png)
 
 ![模组设置](docs/images/zh/mod.png)
 
 ![平台总览](docs/images/zh/platform.png)
+
+### DMP Lite 精简版
+
+包含基本开服功能，仅占用10MB左右内存
+
+![控制面板-精简版](docs/images/zh/lite-dashboard.png)
 
 ---
 
@@ -77,9 +114,7 @@ v1与v2版本基于[koi-ui](https://github.com/KoiKite/koi-ui)二次开发，感
 - [github.akams.cn](https://github.akams.cn/) 
 - [gh.llkk.cc](https://gh.llkk.cc/) 
 - [github.dpik.top](https://github.dpik.top/) 
-- [ghfast.top](https://ghfast.top/) 
-
-感谢[饥荒百科](https://dontstarve.huijiwiki.com/wiki/饥荒)  
+- [ghfast.top](https://ghfast.top/)
 
 感谢[长鸽门徒](https://www.bilibili.com/opus/814456568458248259)提供的饥荒emoji字体
 

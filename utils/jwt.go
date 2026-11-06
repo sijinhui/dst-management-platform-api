@@ -1,42 +1,42 @@
 package utils
 
 import (
+	"crypto/rand"
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/models"
+	"encoding/base64"
 	"errors"
-	"math/rand"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 type Claims struct {
-	Username string `json:"username"`
-	Nickname string `json:"nickname"`
-	Role     string `json:"role"`
+	Username     string `json:"username"`
+	Nickname     string `json:"nickname"`
+	Role         string `json:"role"`
+	TokenVersion int    `json:"tokenVersion"`
 	jwt.RegisteredClaims
 }
 
-// GenerateJWTSecret 生成JWT密钥
-func GenerateJWTSecret() string {
-	source := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(source)
-	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	length := 26
-	randomString := make([]byte, length)
-	for i := range randomString {
-		// 从字符集中随机选择一个字符
-		randomString[i] = charset[r.Intn(len(charset))]
+// GenerateJWTSecret 生成JWT密钥。
+// 使用 crypto/rand 生成随机字节，避免 math/rand 的伪随机序列被预测。
+func GenerateJWTSecret() (string, error) {
+	buf := make([]byte, constant.JwtSecretBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
 	}
 
-	return string(randomString)
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // GenerateJWT 生成 JWT Token
 func GenerateJWT(user models.User, jwtSecret []byte, expirationHours int) (string, error) {
 	claims := Claims{
-		Username: user.Username,
-		Nickname: user.Nickname,
-		Role:     user.Role,
+		Username:     user.Username,
+		Nickname:     user.Nickname,
+		Role:         user.Role,
+		TokenVersion: user.TokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expirationHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

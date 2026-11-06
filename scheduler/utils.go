@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"bufio"
+	"crypto/tls"
+	"dst-management-platform-api/cache"
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/dao"
-	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
 	"encoding/json"
@@ -11,7 +13,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +46,10 @@ const (
 	DayType    = "day"
 )
 
+var client = &http.Client{
+	Timeout: constant.HttpTimeout * time.Second,
+}
+
 type Handler struct {
 	roomDao          *dao.RoomDAO
 	worldDao         *dao.WorldDAO
@@ -63,28 +72,25 @@ func registerJobs() {
 	for _, job := range Jobs {
 		err := UpdateJob(&job)
 		if err != nil {
-			logger.Logger.Error("注册定时任务失败", "err", err)
+			logger.Logger.Errorf("注册定时任务失败, err: %v", err)
 			panic("注册定时任务失败")
 		}
-		logger.Logger.Info(fmt.Sprintf("定时任务[%s]注册成功", job.Name))
+		logger.Logger.Infof("定时任务[%s]注册成功", job.Name)
 	}
 }
 
-func fetchGameInfo(roomID int) (*models.Room, *[]models.World, *models.RoomSetting, error) {
-	room, err := DBHandler.roomDao.GetRoomByID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-	worlds, err := DBHandler.worldDao.GetWorldsByRoomID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-	roomSetting, err := DBHandler.roomSettingDao.GetRoomSettingsByRoomID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
+// runJobAsync 异步执行定时任务中耗时较长的操作
+// gocron的panic处理只能覆盖任务函数本身，协程中的panic需要自行捕获，否则会导致整个进程退出
+func runJobAsync(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Logger.Errorf("[定时任务]：任务[%s]异步执行发生panic，已恢复, err: %v", name, r)
+			}
+		}()
 
-	return room, worlds, roomSetting, nil
+		fn()
+	}()
 }
 
 type DSTVersion struct {
@@ -94,23 +100,35 @@ type DSTVersion struct {
 
 func GetDSTVersion() DSTVersion {
 	var dstVersion DSTVersion
-	dstVersion.Server = 0
-	dstVersion.Local = 0
 
-	client := &http.Client{
-		Timeout: utils.HttpTimeout * time.Second,
+	if cache.OsType == constant.Darwin {
+		dstVersion.Local = getLocalGameVersionDarwin()
+	} else {
+		dstVersion.Local = getLocalGameVersion()
 	}
 
-	file, err := os.Open(utils.DSTLocalVersionPath)
+	if cache.GameServerVersion != 0 {
+		dstVersion.Server = cache.GameServerVersion
+	} else {
+		var err error
+		dstVersion.Server, err = getServerGameVersion()
+		if err != nil {
+			logger.Logger.Error(err)
+		}
+	}
+
+	return dstVersion
+}
+
+func getLocalGameVersion() int {
+	version := 0
+	file, err := os.Open(constant.DSTLocalVersionPath)
 	if err != nil {
-		logger.Logger.Error("获取游戏版本失败", "err", err)
-		return dstVersion
+		logger.Logger.Errorf("获取游戏版本失败, err: %v", err)
+		return version
 	}
 	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-			logger.Logger.Error("关闭文件失败", "err", err)
-		}
+		_ = file.Close()
 	}(file) // 确保文件在函数结束时关闭
 
 	// 创建一个扫描器来读取文件内容
@@ -124,63 +142,218 @@ func GetDSTVersion() DSTVersion {
 		// 将字符串转换为整数
 		number, err := strconv.Atoi(line)
 		if err != nil {
-			logger.Logger.Error("获取游戏版本失败", "err", err)
-			return dstVersion
-		}
-		dstVersion.Local = number
-		// 获取服务端版本
-		// 发送 HTTP GET 请求
-		response, err := client.Get(utils.DSTServerVersionApi)
-		if err != nil {
-			logger.Logger.Error("获取游戏版本失败", "err", err)
-			return dstVersion
-		}
-		defer func(Body io.ReadCloser) {
-			err := Body.Close()
-			if err != nil {
-				logger.Logger.Error("关闭文件失败", "err", err)
-			}
-		}(response.Body) // 确保在函数结束时关闭响应体
+			logger.Logger.Errorf("获取游戏版本失败, err: %v", err)
 
-		// 检查 HTTP 状态码
-		if response.StatusCode != http.StatusOK {
-			logger.Logger.Error("获取游戏版本失败", "err", err)
-			return dstVersion
+			return version
 		}
+		version = number
 
-		// 读取响应体内容
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			logger.Logger.Error("获取游戏版本失败", "err", err)
-			return dstVersion
-		}
-
-		// 将字节数组转换为字符串并返回
-		serverVersion, err := strconv.Atoi(string(body))
-		if err != nil {
-			logger.Logger.Error("获取游戏版本失败", "err", err)
-			return dstVersion
-		}
-
-		dstVersion.Server = serverVersion
-
-		return dstVersion
+		return version
 	}
 
 	// 如果扫描器遇到错误，返回错误
-	if err := scanner.Err(); err != nil {
-		dstVersion.Server = 0
-		dstVersion.Local = 0
-		logger.Logger.Error("获取游戏版本失败", "err", err)
+	if err = scanner.Err(); err != nil {
+		logger.Logger.Errorf("获取游戏版本失败, err: %v", err)
 
-		return dstVersion
+		return version
 	}
 
-	// 如果文件为空，返回错误
-	dstVersion.Server = 0
-	dstVersion.Local = 0
+	return version
+}
 
-	return dstVersion
+func getLocalGameVersionDarwin() int {
+	// strings dontstarve_dedicated_server_nullrenderer | grep -A1 "cfg:%s" | tail -1
+
+	binPath := filepath.Join(constant.DarwinDstBinDir, "dontstarve_dedicated_server_nullrenderer")
+	cmd := fmt.Sprintf("strings %s | grep -A1 \"cfg:%%s\" | tail -1", binPath)
+
+	out, errSystem, errGo := utils.BashCMDOutput(cmd)
+	if errGo != nil || errSystem != "" {
+		logger.Logger.Errorf("获取游戏版本失败，system: %s，err: %v", errSystem, errGo)
+		return 0
+	}
+
+	out = strings.TrimSpace(out)
+
+	version, err := strconv.Atoi(out)
+	if err != nil {
+		logger.Logger.Errorf("获取游戏版本失败，err: %v", err)
+		return 0
+	}
+
+	return version
+}
+
+func getServerGameVersion() (int, error) {
+	var (
+		version int
+		err     error
+	)
+
+	version, err = getServerGameVersionFromKlei()
+	logger.Logger.Debug("尝试从饥荒论坛中获取游戏版本")
+	if err != nil {
+		logger.Logger.Warnf("从饥荒论坛中获取游戏版本失败: %v, 尝试从api获取", err)
+	} else {
+		logger.Logger.Debug("从饥荒论坛中获取游戏版本成功")
+		return version, nil
+	}
+
+	apis := []string{
+		constant.DSTServerVersionApi1,
+		constant.DSTServerVersionApi2,
+	}
+	for _, api := range apis {
+		logger.Logger.Debugf("尝试从api: %s 获取游戏版本", api)
+		version, err = getServerGameVersionFromDstVersion(api)
+		if err != nil {
+			logger.Logger.Warnf("从api中获取游戏版本失败: %v, 尝试下一个api", err)
+		} else {
+			logger.Logger.Debugf("从api: %s 获取游戏版本成功", api)
+			return version, nil
+		}
+	}
+
+	return 0, fmt.Errorf("获取游戏版本失败，%d种方法均失败", 1+len(apis))
+}
+
+func getServerGameVersionFromKlei() (int, error) {
+	const (
+		versionPageURL     = constant.DSTServerVersionKlei
+		maxVersionPageSize = 8 << 20
+		userAgent          = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:             http.ProxyFromEnvironment,
+			ForceAttemptHTTP2: false,
+			TLSNextProto:      make(map[string]func(string, *tls.Conn) http.RoundTripper),
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				NextProtos: []string{"http/1.1"},
+			},
+		},
+		Timeout: constant.HttpTimeout * time.Second,
+	}
+	versionPageURLs := []string{
+		versionPageURL,
+		versionPageURL + "?rss=1",
+		versionPageURL + "?sortby=newest&sortdirection=desc",
+	}
+	releaseEntryRE := regexp.MustCompile(`(?is)<a\b[^>]*\bhref\s*=\s*["'][^"']*/dst/[0-9]+-[^"']*["'][^>]*>.*?</a>`)
+	releaseBadgeRE := regexp.MustCompile(`(?is)<span\b[^>]*\bclass\s*=\s*["'][^"']*\bipsBadge_positive\b[^"']*["'][^>]*>\s*Release\s*</span>`)
+	versionLinkRE := regexp.MustCompile(`(?i)/dst/([0-9]+)-`)
+	var lastErr error
+
+	for _, url := range versionPageURLs {
+		for attempt := 0; attempt < 2; attempt++ {
+			request, err := http.NewRequest(http.MethodGet, url, nil)
+			if err != nil {
+				return 0, err
+			}
+			request.Header.Set("User-Agent", userAgent)
+			request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+			request.Header.Set("Accept-Language", "en-US,en;q=0.9")
+			request.Header.Set("Cache-Control", "no-cache")
+			request.Header.Set("Pragma", "no-cache")
+			request.Header.Set("Sec-Fetch-Dest", "document")
+			request.Header.Set("Sec-Fetch-Mode", "navigate")
+			request.Header.Set("Sec-Fetch-Site", "none")
+			request.Header.Set("Sec-Fetch-User", "?1")
+			request.Header.Set("Upgrade-Insecure-Requests", "1")
+
+			response, err := client.Do(request)
+			if err != nil {
+				lastErr = err
+				if attempt == 0 {
+					time.Sleep(250 * time.Millisecond)
+					continue
+				}
+				break
+			}
+
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, maxVersionPageSize+1))
+			response.Body.Close()
+			if readErr != nil {
+				lastErr = readErr
+				break
+			}
+			if len(body) > maxVersionPageSize {
+				lastErr = fmt.Errorf("version page exceeds %d bytes", maxVersionPageSize)
+				break
+			}
+			if response.StatusCode < 200 || response.StatusCode >= 300 {
+				if response.StatusCode == http.StatusForbidden {
+					lastErr = fmt.Errorf("klei returned HTTP 403, Cloudflare or site access rule")
+				} else {
+					lastErr = fmt.Errorf("HTTP statusCode: %d", response.StatusCode)
+				}
+				if attempt == 0 && (response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError) {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				break
+			}
+
+			html := string(body)
+			entries := releaseEntryRE.FindAllString(html, -1)
+
+			latestVersion := 0
+			for _, entry := range entries {
+				if !releaseBadgeRE.MatchString(entry) {
+					continue
+				}
+				matches := versionLinkRE.FindAllStringSubmatch(entry, -1)
+				for _, match := range matches {
+					version, convertErr := strconv.Atoi(match[1])
+					if convertErr == nil && version > latestVersion {
+						latestVersion = version
+					}
+				}
+			}
+			if latestVersion > 0 {
+				return latestVersion, nil
+			}
+
+			lastErr = fmt.Errorf("no release version found on the Klei version page")
+			break
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no klei version page is available")
+	}
+	return 0, fmt.Errorf("failed to get game version: %w", lastErr)
+}
+
+func getServerGameVersionFromDstVersion(api string) (int, error) {
+	response, err := client.Get(api)
+	if err != nil {
+		return 0, err
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(response.Body) // 确保在函数结束时关闭响应体
+
+	// 检查 HTTP 状态码
+	if response.StatusCode != http.StatusOK {
+		err = fmt.Errorf("HTTP statusCode: %d", response.StatusCode)
+		return 0, err
+	}
+
+	// 读取响应体内容
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	// 将字节数组转换为字符串并返回
+	number, err := strconv.Atoi(string(body))
+	if err != nil {
+		return 0, err
+	}
+
+	return number, nil
 }
 
 type AnnounceSetting struct {
@@ -207,17 +380,14 @@ func GetInternetIP1() (string, error) {
 		As          string  `json:"as"`
 		Query       string  `json:"query"`
 	}
-	client := &http.Client{
-		Timeout: 5 * time.Second, // 设置超时时间为 5 秒
-	}
-	httpResponse, err := client.Get(utils.InternetIPApi1)
+	httpResponse, err := client.Get(constant.InternetIPApi1)
 	if err != nil {
 		return "", err
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
 		if err != nil {
-			logger.Logger.Error("请求关闭失败", "err", err)
+			logger.Logger.Errorf("请求关闭失败, err: %v", err)
 		}
 	}(httpResponse.Body) // 确保在函数结束时关闭响应体
 
@@ -227,44 +397,45 @@ func GetInternetIP1() (string, error) {
 	}
 	var jsonResp JSONResponse
 	if err := json.NewDecoder(httpResponse.Body).Decode(&jsonResp); err != nil {
-		logger.Logger.Error("解析JSON失败", "err", err)
+		logger.Logger.Errorf("解析JSON失败, err: %v", err)
 		return "", err
 	}
 	return jsonResp.Query, nil
 }
 
 func GetInternetIP2() (string, error) {
-	type JSONResponse struct {
-		Ip string `json:"ip"`
-	}
-	client := &http.Client{
-		Timeout: 10 * time.Second, // 设置超时时间为 10 秒
-	}
-	httpResponse, err := client.Get(utils.InternetIPApi2)
+	response, err := client.Get(constant.InternetIPApi2)
 	if err != nil {
 		return "", err
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
 		if err != nil {
-			logger.Logger.Error("请求关闭失败", "err", err)
+			logger.Logger.Errorf("请求关闭失败, err: %v", err)
 		}
-	}(httpResponse.Body) // 确保在函数结束时关闭响应体
+	}(response.Body) // 确保在函数结束时关闭响应体
 
 	// 检查 HTTP 状态码
-	if httpResponse.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP 请求失败，状态码: %d", httpResponse.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP 请求失败，状态码: %d", response.StatusCode)
 	}
-	var jsonResp JSONResponse
-	if err := json.NewDecoder(httpResponse.Body).Decode(&jsonResp); err != nil {
-		logger.Logger.Error("解析JSON失败", "err", err)
-		return "", err
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		logger.Logger.Errorf("读取响应失败, err: %v", err)
+		return "", fmt.Errorf("读取响应失败")
 	}
-	return jsonResp.Ip, nil
+
+	re := regexp.MustCompile(`IP\s+:\s+(\d+\.\d+\.\d+\.\d+)`)
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) >= 2 {
+		return matches[1], nil
+	}
+
+	return "", fmt.Errorf("查询公网ip失败")
 }
 
-// 天转为秒
-func parsePlayerInfoSaveTime(saveTime int) int {
+// ParsePlayerInfoSaveTime 天转为秒
+func ParsePlayerInfoSaveTime(saveTime int) int {
 	if saveTime == 0 {
 		saveTime = 1
 	}

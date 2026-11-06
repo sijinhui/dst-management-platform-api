@@ -1,10 +1,15 @@
 package player
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/dao"
-	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/logger"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,23 +34,6 @@ func NewHandler(userDao *dao.UserDAO, roomDao *dao.RoomDAO, worldDao *dao.WorldD
 	}
 }
 
-func (h *Handler) fetchGameInfo(roomID int) (*models.Room, *[]models.World, *models.RoomSetting, error) {
-	room, err := h.roomDao.GetRoomByID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-	worlds, err := h.worldDao.GetWorldsByRoomID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-	roomSetting, err := h.roomSettingDao.GetRoomSettingsByRoomID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-
-	return room, worlds, roomSetting, nil
-}
-
 func (h *Handler) hasPermission(c *gin.Context, roomID string) bool {
 	role, _ := c.Get("role")
 	username, _ := c.Get("username")
@@ -68,4 +56,34 @@ func (h *Handler) hasPermission(c *gin.Context, roomID string) bool {
 	}
 
 	return false
+}
+
+var client *http.Client = &http.Client{
+	Timeout: constant.HttpTimeout * time.Second,
+}
+
+func getPublicBlockList() ([]string, error) {
+	httpResponse, err := client.Get(constant.DstBlockList)
+	if err != nil {
+		return []string{}, err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			logger.Logger.Errorf("请求关闭失败, err: %v", err)
+		}
+	}(httpResponse.Body) // 确保在函数结束时关闭响应体
+	// 检查 HTTP 状态码
+	if httpResponse.StatusCode != http.StatusOK {
+		return []string{}, fmt.Errorf("获取饥荒黑名单列表失败，HTTP Code: %d", httpResponse.StatusCode)
+	}
+
+	var responseData struct {
+		Uids []string `json:"uids"`
+	}
+	if err = json.NewDecoder(httpResponse.Body).Decode(&responseData); err != nil {
+		return []string{}, fmt.Errorf("解析饥荒黑名单失败, err: %v", err)
+	}
+
+	return responseData.Uids, nil
 }

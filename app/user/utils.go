@@ -3,8 +3,7 @@ package user
 import "dst-management-platform-api/database/dao"
 
 type Handler struct {
-	userDao   *dao.UserDAO
-	systemDao *dao.SystemDAO
+	userDao *dao.UserDAO
 }
 
 func NewHandler(userDao *dao.UserDAO) *Handler {
@@ -83,6 +82,16 @@ var game = menuItem{
 			To:        "/game/player",
 			Component: "game/player",
 			Icon:      "ri-ghost-line",
+			Links:     nil,
+		},
+		{
+			ID:        304,
+			Type:      "link",
+			Section:   "",
+			Title:     "gameFavorite",
+			To:        "/game/favorite",
+			Component: "game/favorite",
+			Icon:      "ri-bookmark-3-line",
 			Links:     nil,
 		},
 	},
@@ -167,6 +176,36 @@ var tools = menuItem{
 			To:        "/tools/snapshot",
 			Component: "tools/snapshot",
 			Icon:      "ri-flip-horizontal-line",
+			Links:     nil,
+		},
+		{
+			ID:        606,
+			Type:      "link",
+			Section:   "",
+			Title:     "toolsTmi",
+			To:        "/tools/tmi",
+			Component: "tools/tmi",
+			Icon:      "ri-ghost-4-line",
+			Links:     nil,
+		},
+		{
+			ID:        607,
+			Type:      "link",
+			Section:   "",
+			Title:     "toolsAI",
+			To:        "/tools/aichat",
+			Component: "tools/aichat",
+			Icon:      "ri-chat-smile-ai-3-line",
+			Links:     nil,
+		},
+		{
+			ID:        608,
+			Type:      "link",
+			Section:   "",
+			Title:     "toolsRoomMetrics",
+			To:        "/tools/room_metrics",
+			Component: "tools/room_metrics",
+			Icon:      "ri-dashboard-2-line",
 			Links:     nil,
 		},
 	},

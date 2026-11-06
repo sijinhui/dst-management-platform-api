@@ -9,7 +9,7 @@
 PORT=80
 
 # 数据库文件所在目录，例如：./config
-CONFIG_DIR="./data"
+CONFIG_DIR="data"
 
 # 虚拟内存大小，例如 1G 4G等
 SWAPSIZE=2G
@@ -17,9 +17,15 @@ SWAPSIZE=2G
 # 日志等级，例如：debug info warn error
 LEVEL="info"
 
+# 证书文件，如果为空则启动http服务 例如：./fullchain.pem
+CERT_FILE=""
+
+# 私钥文件，如果为空则启动http服务 例如：./privkey.pem
+KEY_FILE=""
+
 # 加速节点
 ACCELERATION_SITE=(
-	"gh.llkk.cc"
+	"gh-proxy.com"
 	"github.dpik.top"
 	"ghfast.top"
 )
@@ -30,7 +36,8 @@ ACCELERATION_SITE=(
 ###########################################
 
 USER=$(whoami)
-ExeFile="$HOME/dmp"
+WORK_DIR=$(pwd)
+ExeFile="${WORK_DIR}/dmp"
 
 DMP_GITHUB_HOME_URL="https://github.com/miracleEverywhere/dst-management-platform-api"
 DMP_GITHUB_API_URL="https://api.github.com/repos/miracleEverywhere/dst-management-platform-api/releases/latest"
@@ -38,8 +45,21 @@ SCRIPT_GITHUB="https://raw.githubusercontent.com/miracleEverywhere/dst-managemen
 DMP_HOME="https://miraclesses.top/"
 
 ACCELERATED_URL=""
+OS_NAME=$(uname -s)
+IS_DARWIN=false
+if [[ "${OS_NAME}" == "Darwin" ]]; then
+	IS_DARWIN=true
+fi
 
-cd "$HOME" || exit
+if ${IS_DARWIN}; then
+	ARCHIVE_NAME="dmp_darwin.tgz"
+	if ! brew --version >/dev/null 2>&1; then
+		echo "brew未安装"
+		exit 1
+	fi
+else
+	ARCHIVE_NAME="dmp.tgz"
+fi
 
 function echo_red() {
 	echo -e "\033[0;31m$*\033[0m"
@@ -61,20 +81,38 @@ function echo_red_blink() {
 	echo -e "\033[5;31m$*\033[0m"
 }
 
-# 检查用户，只能使用root执行
-if [[ "${USER}" != "root" ]]; then
-	echo_red "请使用root用户执行此脚本"
+if ${IS_DARWIN} && { [[ ! "${PORT}" =~ ^[0-9]+$ ]] || (( PORT < 1024 )); }; then
+	echo_red "MacOS系统中运行DMP，端口必须大于1024，当前端口: ${PORT}"
 	exit 1
+fi
+
+# 保存原始参数，供 update_script 和 auto_start_dmp 使用
+ORIGINAL_ARGS=("$@")
+RUN_SH_CMD="$0 ${ORIGINAL_ARGS[*]}"
+
+# Darwin 不需要 root 判断；Linux 保留 no-root 模式
+SUDO=""
+if ! ${IS_DARWIN}; then
+	if [[ "$1" == "no-root" ]]; then
+		SUDO="sudo"
+		shift
+		echo_yellow "以非root模式运行，需要root权限的操作将使用sudo"
+	elif [[ "${USER}" != "root" ]]; then
+		echo_red "请使用root用户执行此脚本，或使用 ./run.sh no-root 以非root模式运行"
+		exit 1
+	fi
 fi
 
 # 设置全局stderr为红色并添加固定格式
 function set_tty() {
+	exec 3>&2
 	exec 2> >(while read -r line; do echo_red "[$(date +'%F %T')] [ERROR] ${line}" >&2; done)
 }
 
 # 恢复stderr颜色
 function unset_tty() {
-	exec 2>/dev/tty
+	exec 2>&3
+	exec 3>&-
 }
 
 # 定义一个函数来提示用户输入
@@ -100,11 +138,19 @@ function prompt_user() {
 	echo_green "[5]: 强制更新饥荒管理平台"
 	echo_green "[6]: 更新run.sh启动脚本"
 	echo_yellow "————————————————————————————————————————————————————————————"
-	echo_green "[7]: 设置虚拟内存"
-	echo_green "[8]: 设置开机自启"
-	echo_green "[9]: 退出脚本"
+	if ${IS_DARWIN}; then
+		echo_green "[7]: 退出脚本"
+	else
+		echo_green "[7]: 设置虚拟内存"
+		echo_green "[8]: 设置开机自启"
+		echo_green "[9]: 退出脚本"
+	fi
 	echo_yellow "————————————————————————————————————————————————————————————"
-	echo_yellow "请输入要执行的操作 [0-9]: "
+	if ${IS_DARWIN}; then
+		echo_yellow "请输入要执行的操作 [0-7]: "
+	else
+		echo_yellow "请输入要执行的操作 [0-9]: "
+	fi
 }
 
 # 加速节点选择
@@ -154,17 +200,32 @@ function generate_acceleration() {
 	fi
 }
 
+# 通用包安装函数
+function install_pkg() {
+	local pkg="$1"
+	if ${IS_DARWIN}; then
+		brew install "$pkg"
+		return
+	fi
+	OS=$(grep -P "^ID=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g")
+	if [[ ${OS} == "ubuntu" ]]; then
+		${SUDO} apt install -y "$pkg"
+	else
+		if grep -P "^ID_LIKE=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g" | grep rhel; then
+			${SUDO} yum install -y "$pkg"
+		fi
+	fi
+}
+
 # 检查jq
 function check_jq() {
 	echo_cyan "正在检查jq命令"
 	if ! jq --version >/dev/null 2>&1; then
-		OS=$(grep -P "^ID=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g")
-		if [[ ${OS} == "ubuntu" ]]; then
-			apt install -y jq
-		else
-			if grep -P "^ID_LIKE=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g" | grep rhel; then
-				yum install -y jq
-			fi
+		install_pkg jq
+		# 再次检查是否安装成功
+		if ! jq --version >/dev/null 2>&1; then
+			echo_red "jq 安装失败，请手动安装 jq 后重试"
+			exit 1
 		fi
 	fi
 }
@@ -172,44 +233,12 @@ function check_jq() {
 function check_curl() {
 	echo_cyan "正在检查curl命令"
 	if ! curl --version >/dev/null 2>&1; then
-		OS=$(grep -P "^ID=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g")
-		if [[ ${OS} == "ubuntu" ]]; then
-			apt install -y curl
-		else
-			if grep -P "^ID_LIKE=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g" | grep rhel; then
-				yum install -y curl
-			fi
+		install_pkg curl
+		# 再次检查是否安装成功
+		if ! curl --version >/dev/null 2>&1; then
+			echo_red "curl 安装失败，请手动安装 curl 后重试"
+			exit 1
 		fi
-	fi
-}
-
-function check_strings() {
-	echo_cyan "正在检查strings命令"
-	if ! strings --version >/dev/null 2>&1; then
-		OS=$(grep -P "^ID=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g")
-		if [[ ${OS} == "ubuntu" ]]; then
-			apt install -y binutils
-		else
-			if grep -P "^ID_LIKE=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g" | grep rhel; then
-				yum install -y binutils
-			fi
-		fi
-	fi
-
-}
-
-# Ubuntu检查GLIBC, rhel需要下载文件手动安装
-function check_glibc() {
-	check_strings
-	echo_cyan "正在检查GLIBC版本"
-	OS=$(grep -P "^ID=" /etc/os-release | awk -F'=' '{print($2)}' | sed "s/['\"]//g")
-	if [[ ${OS} == "ubuntu" ]]; then
-		if ! strings /lib/x86_64-linux-gnu/libc.so.6 | grep GLIBC_2.34 >/dev/null 2>&1; then
-			apt update
-			apt install -y libc6
-		fi
-	else
-		echo_red "非Ubuntu系统，如GLIBC小于2.34，请手动升级"
 	fi
 }
 
@@ -237,17 +266,21 @@ function install_dmp() {
 	check_jq
 	check_curl
 
-	# 获取GITHUB最新releases地址
+	# 获取GITHUB最新releases信息（一次请求获取所有数据）
 	echo_cyan "正在获取下载信息"
-	if ! github_url=$(curl -s -L ${DMP_GITHUB_API_URL} | jq -r '.assets[] | select(.name == "dmp.tgz") | .browser_download_url'); then
+	release_json=$(curl -s -L ${DMP_GITHUB_API_URL})
+	if [[ -z "$release_json" ]]; then
 		echo_red "获取最新版本信息失败，请检查网络连接"
 		exit 1
 	fi
-
-	# sha256 digest
-	echo_cyan "正在获取验证信息"
-	if ! github_digest=$(curl -s -L ${DMP_GITHUB_API_URL} | jq -r '.assets[] | select(.name == "dmp.tgz") | .digest' | awk -F':' '{print $2}'); then
-		echo_red "获取最新版本信息失败，请检查网络连接"
+	github_url=$(echo "$release_json" | jq -r --arg name "$ARCHIVE_NAME" '.assets[] | select(.name == $name) | .browser_download_url')
+	if [[ -z "$github_url" ]]; then
+		echo_red "未找到下载文件，请检查网络连接"
+		exit 1
+	fi
+	github_digest=$(echo "$release_json" | jq -r --arg name "$ARCHIVE_NAME" '.assets[] | select(.name == $name) | .digest' | awk -F':' '{print $2}')
+	if [[ -z "$github_digest" ]]; then
+		echo_red "获取安装包校验值失败，请检查网络连接"
 		exit 1
 	fi
 
@@ -256,9 +289,13 @@ function install_dmp() {
 
 	# 开始下载
 	echo_cyan "正在从${url}进行下载"
-	if download "${url}" "dmp.tgz" 10; then
+	if download "${url}" "${ARCHIVE_NAME}" 10; then
 		# 验证 SHA-256
-		file_digest=$(sha256sum dmp.tgz | awk '{print $1}')
+		if command -v sha256sum >/dev/null 2>&1; then
+			file_digest=$(sha256sum "${ARCHIVE_NAME}" | awk '{print $1}')
+		else
+			file_digest=$(shasum -a 256 "${ARCHIVE_NAME}" | awk '{print $1}')
+		fi
 		if [[ "$github_digest" != "$file_digest" ]]; then
 			echo_red "DMP下载失败"
 			exit 1
@@ -269,8 +306,8 @@ function install_dmp() {
 	fi
 
 	set -e
-	tar zxvf dmp.tgz >/dev/null
-	rm -f dmp.tgz
+	tar zxvf "${ARCHIVE_NAME}" >/dev/null
+	rm -f "${ARCHIVE_NAME}"
 	chmod +x "$ExeFile"
 	set +e
 }
@@ -281,6 +318,7 @@ function check_dmp() {
 	if pgrep dmp >/dev/null; then
 		echo_green "启动成功"
 	else
+		get_panic_logs
 		echo_red "启动失败"
 		exit 1
 	fi
@@ -288,35 +326,46 @@ function check_dmp() {
 
 # 启动主程序
 function start_dmp() {
-	# 检查端口是否被占用,如果被占用则退出
-	port=$(ss -ltnp | awk -v port=${PORT} '$4 ~ ":"port"$" {print $4}')
+	stop_dmp
 
+	# 检查端口是否被占用,如果被占用则退出
+	if ${IS_DARWIN}; then
+		if command -v lsof >/dev/null 2>&1; then
+			port=$(lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null)
+		else
+			port=$(netstat -anv -p tcp 2>/dev/null | awk -v port="${PORT}" '$4 ~ "\\." port "$" && $6 == "LISTEN" {print $4}')
+		fi
+	else
+		port=$(ss -ltn | awk -v port=${PORT} '$4 ~ ":"port"$" {print $4}')
+	fi
 	if [ -n "$port" ]; then
-		echo_red "端口 $PORT 已被占用: $port", 修改 run.sh 中的 PORT 变量后重新运行
+		echo_red "端口 $PORT 已被占用: $port, 修改 run.sh 中的 PORT 变量后重新运行或检查饥荒管理平台是否正在运行"
 		exit 1
 	fi
 
-	check_glibc
-
 	if [ -e "$ExeFile" ]; then
-		nohup "$ExeFile" -bind ${PORT} -dbpath ${CONFIG_DIR} -level ${LEVEL} >/dev/null 2>&1 &
+		nohup "$ExeFile" -bind ${PORT} -dbpath ${CONFIG_DIR} -level ${LEVEL} -cert "${CERT_FILE}" -key "${KEY_FILE}" >/dev/null 2>&1 &
 	else
 		install_dmp
-		nohup "$ExeFile" -bind ${PORT} -dbpath ${CONFIG_DIR} -level ${LEVEL} >/dev/null 2>&1 &
+		nohup "$ExeFile" -bind ${PORT} -dbpath ${CONFIG_DIR} -level ${LEVEL} -cert "${CERT_FILE}" -key "${KEY_FILE}" >/dev/null 2>&1 &
 	fi
 }
 
 # 关闭主程序
 function stop_dmp() {
-	pkill -9 dmp
-	echo_green "关闭成功"
+	pkill dmp 2>/dev/null
+	sleep 1
+	pkill -9 dmp 2>/dev/null
 	sleep 1
 }
 
 # 删除主程序、请求日志、运行日志、遗漏的压缩包
 function clear_dmp() {
 	echo_cyan "正在执行清理"
-	rm -f dmp dmp.tgz logs/*
+	pkill -9 dmp 2>/dev/null
+	rm -f dmp "${ARCHIVE_NAME}" logs/*
+	rm -f manual_install.sh
+	rm -f manual_update.sh
 }
 
 # 检查当前版本号
@@ -363,17 +412,28 @@ function update_script() {
 		exit 1
 	fi
 
-	# 修改下载好的最新文件
-	sed -i "s/^PORT=.*/PORT=${PORT}/" $TEMP_FILE
-	sed -i "s/^SWAPSIZE=.*/SWAPSIZE=${SWAPSIZE}/" $TEMP_FILE
-	sed -i "s#^CONFIG_DIR=.*#CONFIG_DIR=${CONFIG_DIR}#" $TEMP_FILE
-	sed -i "s#^LEVEL=.*#LEVEL=${LEVEL}#" $TEMP_FILE
+	# 修改下载好的最新文件，不生成备份
+	if ${IS_DARWIN}; then
+		sed -i '' "s/^PORT=.*/PORT=${PORT}/" "$TEMP_FILE"
+		sed -i '' "s/^SWAPSIZE=.*/SWAPSIZE=${SWAPSIZE}/" "$TEMP_FILE"
+		sed -i '' "s#^CONFIG_DIR=.*#CONFIG_DIR=${CONFIG_DIR}#" "$TEMP_FILE"
+		sed -i '' "s#^LEVEL=.*#LEVEL=${LEVEL}#" "$TEMP_FILE"
+		sed -i '' "s#^CERT_FILE=.*#CERT_FILE=${CERT_FILE}#" "$TEMP_FILE"
+		sed -i '' "s#^KEY_FILE=.*#KEY_FILE=${KEY_FILE}#" "$TEMP_FILE"
+	else
+		sed -i "s/^PORT=.*/PORT=${PORT}/" "$TEMP_FILE"
+		sed -i "s/^SWAPSIZE=.*/SWAPSIZE=${SWAPSIZE}/" "$TEMP_FILE"
+		sed -i "s#^CONFIG_DIR=.*#CONFIG_DIR=${CONFIG_DIR}#" "$TEMP_FILE"
+		sed -i "s#^LEVEL=.*#LEVEL=${LEVEL}#" "$TEMP_FILE"
+		sed -i "s#^CERT_FILE=.*#CERT_FILE=${CERT_FILE}#" "$TEMP_FILE"
+		sed -i "s#^KEY_FILE=.*#KEY_FILE=${KEY_FILE}#" "$TEMP_FILE"
+	fi
 
 	# 替换当前脚本
 	mv -f "$TEMP_FILE" "$0" && chmod +x "$0"
 	echo_green "脚本更新完成，3 秒后重新启动..."
 	sleep 3
-	exec "$0"
+	exec "$0" "${ORIGINAL_ARGS[@]}"
 }
 
 # 设置虚拟内存
@@ -385,33 +445,33 @@ function set_swap() {
 		echo_green "交换文件已存在，跳过创建步骤"
 	else
 		echo_cyan "创建交换文件..."
-		sudo fallocate -l $SWAPSIZE $SWAPFILE
-		sudo chmod 600 $SWAPFILE
-		sudo mkswap $SWAPFILE
-		sudo swapon $SWAPFILE
+		${SUDO} fallocate -l $SWAPSIZE $SWAPFILE
+		${SUDO} chmod 600 $SWAPFILE
+		${SUDO} mkswap $SWAPFILE
+		${SUDO} swapon $SWAPFILE
 		echo_green "交换文件创建并启用成功"
 	fi
 
 	# 添加到 /etc/fstab 以便开机启动
 	if ! grep -q "$SWAPFILE" /etc/fstab; then
 		echo_cyan "将交换文件添加到 /etc/fstab "
-		echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab
+		echo "$SWAPFILE none swap sw 0 0" | ${SUDO} tee -a /etc/fstab > /dev/null
 		echo_green "交换文件已添加到开机启动"
 	else
 		echo_green "交换文件已在 /etc/fstab 中，跳过添加步骤"
 	fi
 
 	# 更改swap配置并持久化
-	sysctl -w vm.swappiness=20
-	sysctl -w vm.min_free_kbytes=100000
-	echo -e 'vm.swappiness = 20\nvm.min_free_kbytes = 100000\n' >/etc/sysctl.d/dmp_swap.conf
+	${SUDO} sysctl -w vm.swappiness=20
+	${SUDO} sysctl -w vm.min_free_kbytes=100000
+	echo -e 'vm.swappiness = 20\nvm.min_free_kbytes = 100000\n' | ${SUDO} tee /etc/sysctl.d/dmp_swap.conf > /dev/null
 
-	echo_green "系统swap设置成功"
+	echo_green "系统虚拟内存设置成功"
 }
 
 # 设置开机自启
 function auto_start_dmp() {
-	CRON_JOB="@reboot /bin/bash -c 'source /etc/profile && cd /root && echo 1 | /root/run.sh'"
+	CRON_JOB="@reboot /bin/bash -c 'source /etc/profile && cd ${WORK_DIR} && echo 1 | ${RUN_SH_CMD}'"
 
 	# 检查 crontab 中是否已存在该命令
 	if crontab -l 2>/dev/null | grep -Fq "$CRON_JOB"; then
@@ -424,6 +484,11 @@ function auto_start_dmp() {
 		) | crontab -
 		echo_green "已成功设置开机自启"
 	fi
+}
+
+# 获取panic日志
+function get_panic_logs() {
+    n=$(grep -nF '[ERROR]' logs/runtime.log | tail -n1 | cut -d: -f1); [ -n "$n" ] && tail -n +"$n" logs/runtime.log
 }
 
 # 使用无限循环让用户输入命令
@@ -458,7 +523,6 @@ while true; do
 		;;
 	3)
 		set_tty
-		stop_dmp
 		start_dmp
 		check_dmp
 		echo_green "重启成功"
@@ -471,7 +535,6 @@ while true; do
 		get_latest_version
 		if [[ "$(echo -e "$CURRENT_VERSION\n$LATEST_VERSION" | sort -V | head -n1)" == "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
 			echo_yellow "当前版本 ($CURRENT_VERSION) 小于最新版本 ($LATEST_VERSION)，即将更新"
-			stop_dmp
 			clear_dmp
 			install_dmp
 			start_dmp
@@ -485,7 +548,6 @@ while true; do
 		;;
 	5)
 		set_tty
-		stop_dmp
 		clear_dmp
 		install_dmp
 		start_dmp
@@ -501,22 +563,38 @@ while true; do
 		break
 		;;
 	7)
-		set_tty
-		set_swap
-		unset_tty
-		break
+		if ${IS_DARWIN}; then
+			exit 0
+		else
+			set_tty
+			set_swap
+			unset_tty
+			break
+		fi
 		;;
 	8)
+		if ${IS_DARWIN}; then
+			echo_red "请输入正确的数字 [0-7]"
+			continue
+		fi
 		set_tty
 		auto_start_dmp
 		unset_tty
 		break
 		;;
 	9)
+		if ${IS_DARWIN}; then
+			echo_red "请输入正确的数字 [0-7]"
+			continue
+		fi
 		exit 0
 		;;
 	*)
-		echo_red "请输入正确的数字 [0-9]"
+		if ${IS_DARWIN}; then
+			echo_red "请输入正确的数字 [0-7]"
+		else
+			echo_red "请输入正确的数字 [0-9]"
+		fi
 		continue
 		;;
 	esac

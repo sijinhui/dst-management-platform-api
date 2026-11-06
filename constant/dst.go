@@ -1,0 +1,66 @@
+package constant
+
+// GameMainPath 游戏主目录
+const GameMainPath = "dst"
+
+// GameUgcPath 游戏ugc模组目录
+const GameUgcPath = GameMainPath + "/ugc_mods"
+
+// GameNotUgcPath 游戏非ugc模组目录
+const GameNotUgcPath = GameMainPath + "/mods"
+
+// GameModSettingPath 自动下载mod配置文件
+const GameModSettingPath = GameNotUgcPath + "/dedicated_server_mods_setup.lua"
+
+// DSTLocalVersionPath 饥荒版本文件
+const DSTLocalVersionPath = "dst/version.txt"
+
+// DSTServerVersionKlei 饥荒版本查询页面
+const DSTServerVersionKlei = "https://kleiforums.com/game-updates/dst/"
+
+// DSTServerVersionApi1 DSTServerVersionApi2 饥荒版本api
+const DSTServerVersionApi1 = "http://ver.tugos.cn/getLocalVersion"
+const DSTServerVersionApi2 = "https://dstv.3moredays.com/version.txt"
+
+// SteamApiModDetail 模组详情接口
+const SteamApiModDetail = "http://api.steampowered.com/IPublishedFileService/GetDetails/v1/"
+
+// SteamApiModSearch 模组查询接口
+const SteamApiModSearch = "http://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
+
+const DstBlockList = "https://dst-block.miraclesses.top/api/blacklist/public"
+
+// DmpFiles 平台文件根目录
+const DmpFiles = "dmp_files"
+
+const PluginPath = DmpFiles + "/plugins"
+
+const PluginTmiPath = PluginPath + "/tmi"
+
+const TmirID = 3638290455
+
+// PluginAiChatPath ai聊天插件根目录
+const PluginAiChatPath = PluginPath + "/ai_chat"
+
+// PluginAiChatWikiPath ai聊天wiki数据
+const PluginAiChatWikiPath = PluginAiChatPath + "/wiki"
+
+// PluginAiChatSearchDataPath ai聊天搜索用数据
+const PluginAiChatSearchDataPath = PluginAiChatPath + "/search_data"
+
+// ========== Darwin ==========
+
+// DarwinDstContentsPath 游戏主目录
+const DarwinDstContentsPath = "dst/dontstarve_dedicated_server_nullrenderer.app/Contents"
+
+// DarwinDstBinDir macos下游戏二进制文件目录
+const DarwinDstBinDir = DarwinDstContentsPath + "/MacOS"
+
+// DarwinGameModSettingPath dedicated_server_mods_setup.lua文件
+const DarwinGameModSettingPath = DarwinGameNotUgcPath + "/dedicated_server_mods_setup.lua"
+
+// DarwinGameUgcPath macos ugc模组目录
+const DarwinGameUgcPath = DarwinDstContentsPath + "/ugc_mods"
+
+// DarwinGameNotUgcPath macos 非ugc模组目录
+const DarwinGameNotUgcPath = DarwinDstContentsPath + "/mods"

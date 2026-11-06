@@ -3,6 +3,12 @@
 # 设置错误处理
 set -e
 
+# 定义变量
+WORK_DIR=$(pwd)
+STEAM_DIR="$WORK_DIR/steamcmd"
+DST_DIR="$WORK_DIR/dst"
+OS_TYPE=$(uname -s)
+
 # 错误处理函数
 function error_exit() {
     echo -e "==>dmp@@ 更新失败 @@dmp<=="
@@ -12,8 +18,15 @@ function error_exit() {
 # 设置trap捕获所有错误
 trap error_exit ERR
 
-cd steamcmd || error_exit
-./steamcmd.sh +force_install_dir /root/dst +login anonymous +app_update 343050 validate +quit || error_exit
+cd "${STEAM_DIR}" || error_exit
+./steamcmd.sh +force_install_dir "${DST_DIR}" +login anonymous +app_update 343050 validate +quit || error_exit
+
+if [[ "${OS_TYPE}" == "Darwin" ]]; then
+	DST_BIN_DIR="$DST_DIR/dontstarve_dedicated_server_nullrenderer.app/Contents/MacOS"
+    DST_BIN="dontstarve_dedicated_server_nullrenderer"
+    cd "$DST_BIN_DIR" || error_exit
+    timeout 1m ./$DST_BIN || true
+fi
 
 cd || true
 

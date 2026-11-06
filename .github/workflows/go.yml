@@ -14,22 +14,45 @@ env:
 
 jobs:
   build-binary:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
 
     steps:
       - name: Check out Git repository
         uses: actions/checkout@v4
 
-      - name: Setup Go 1.25.4
+      - name: Setup Go 1.27.3
         uses: actions/setup-go@v5
         with:
-          go-version: 1.25.4
+          go-version: 1.27.3
 
       - name: build-linux
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         if: matrix.os == 'ubuntu-latest'
         run: CGO_ENABLED=0 go build -ldflags '-s -w' -v -o ./dmp && tar zcf dmp.tgz dmp
+
+      - name: build-darwin
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        if: matrix.os == 'macos-latest'
+        run: CGO_ENABLED=0 go build -ldflags '-s -w' -v -o ./dmp && tar zcf dmp_darwin.tgz dmp
+
+      - name: build-lite
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          CGO_ENABLED=0 go build -ldflags '-s -w' -v -tags=lite -o ./dmp-lite
+          mkdir -p lite-package
+          cp dmp-lite lite-package/
+          cp -r lite/dist-lite lite-package/dist-lite
+          cp embedFS/shell/manual_install.sh embedFS/shell/manual_update.sh lite-package/
+          cp lite/run.sh lite-package/run.sh
+          chmod 755 lite-package/dmp-lite lite-package/manual_install.sh lite-package/manual_update.sh lite-package/run.sh
+          tar zcf dmp-lite.tgz -C lite-package dmp-lite dist-lite manual_install.sh manual_update.sh run.sh
+          rm -rf lite-package
 
       - name: release
         uses: softprops/action-gh-release@v1

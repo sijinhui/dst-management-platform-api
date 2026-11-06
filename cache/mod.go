@@ -1,0 +1,166 @@
+package cache
+
+import (
+	"fmt"
+	"sync"
+)
+
+var (
+	// ModDownloadExecuting 如果没有模组正在下载(==0)，则执行临时模组文件清理任务 scheduler/global.go ModDownloadClean()
+	ModDownloadExecuting int32
+	// ModDownloadStatus 模组下载状态
+	ModDownloadStatus *ModCache
+
+	// playerUpdateModStatus 玩家更新模组任务状态 (检查或更新中-true|空闲-false)
+	playerUpdateModStatus      = make(map[int]bool)
+	playerUpdateModStatusMutex sync.Mutex
+)
+
+// TryStartPlayerUpdateMod 尝试占用指定房间的模组更新状态。
+// 返回 false 表示该房间已有检查或更新流程正在执行。
+func TryStartPlayerUpdateMod(roomID int) bool {
+	playerUpdateModStatusMutex.Lock()
+	defer playerUpdateModStatusMutex.Unlock()
+
+	if playerUpdateModStatus[roomID] {
+		return false
+	}
+	playerUpdateModStatus[roomID] = true
+
+	return true
+}
+
+// FinishPlayerUpdateMod 释放指定房间的模组更新状态。
+func FinishPlayerUpdateMod(roomID int) {
+	playerUpdateModStatusMutex.Lock()
+	defer playerUpdateModStatusMutex.Unlock()
+
+	delete(playerUpdateModStatus, roomID)
+}
+
+type ModItem struct {
+	ID          int `json:"id"`
+	Size        int `json:"size"`
+	CurrentSize int `json:"currentSize"`
+}
+
+type ModCache struct {
+	mu   sync.RWMutex
+	mods map[int][]*ModItem
+}
+
+// NewModCache 创建新的缓存实例
+func NewModCache() *ModCache {
+	return &ModCache{
+		mods: make(map[int][]*ModItem),
+	}
+}
+
+// Set 设置或更新缓存项
+func (m *ModCache) Set(roomID int, item *ModItem) error {
+	if m.mods == nil {
+		return fmt.Errorf("缓存未初始化")
+	}
+	if item == nil {
+		return fmt.Errorf("item 不能为 nil")
+	}
+	if roomID <= 0 || item.ID <= 0 {
+		return fmt.Errorf("参数非法: roomID=%d, modID=%d", roomID, item.ID)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	itemCopy := &ModItem{
+		ID:          item.ID,
+		Size:        item.Size,
+		CurrentSize: item.CurrentSize,
+	}
+
+	// 检查是否已存在，存在则更新
+	items, exists := m.mods[roomID]
+	if exists {
+		for i, existing := range items {
+			if existing.ID == item.ID {
+				// 更新已存在的项
+				items[i] = itemCopy
+				return nil
+			}
+		}
+	}
+
+	// 不存在则追加
+	m.mods[roomID] = append(m.mods[roomID], itemCopy)
+	return nil
+}
+
+// Get 根据roomID和modID获取缓存项
+func (m *ModCache) Get(roomID, modID int) (*ModItem, error) {
+	if m.mods == nil {
+		return nil, fmt.Errorf("缓存未初始化")
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	items, exists := m.mods[roomID]
+	if !exists {
+		return nil, fmt.Errorf("房间 %d 不存在于缓存中", roomID)
+	}
+
+	for _, item := range items {
+		if item.ID == modID {
+			return &ModItem{
+				ID:          item.ID,
+				Size:        item.Size,
+				CurrentSize: item.CurrentSize,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("模组 %d 不存在于房间 %d 中", modID, roomID)
+}
+
+// Delete 删除缓存项
+func (m *ModCache) Delete(roomID, modID int) error {
+	if m.mods == nil {
+		return fmt.Errorf("缓存未初始化")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	items, exists := m.mods[roomID]
+	if !exists {
+		return fmt.Errorf("房间 %d 不存在于缓存中", roomID)
+	}
+
+	for i, item := range items {
+		if item.ID == modID {
+			// 删除该元素
+			m.mods[roomID] = append(items[:i], items[i+1:]...)
+			if len(m.mods[roomID]) == 0 {
+				delete(m.mods, roomID)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("模组 %d 不存在于房间 %d 中", modID, roomID)
+}
+
+func (m *ModCache) DeleteByRoomID(roomID int) error {
+	if m.mods == nil {
+		return fmt.Errorf("缓存未初始化")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.mods, roomID)
+
+	return nil
+}
+
+func initModDownloadStatus() {
+	ModDownloadStatus = NewModCache()
+}

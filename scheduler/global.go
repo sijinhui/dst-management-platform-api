@@ -1,11 +1,14 @@
 package scheduler
 
 import (
-	"dst-management-platform-api/database/db"
+	"dst-management-platform-api/cache"
+	"dst-management-platform-api/constant"
+	"dst-management-platform-api/database/dao"
 	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/dst"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
+	"dst-management-platform-api/webhook"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -15,7 +18,7 @@ import (
 func OnlinePlayerGet(interval, saveTime int, uidMapEnable bool) {
 	roomsBasic, err := DBHandler.roomDao.GetRoomBasic()
 	if err != nil {
-		logger.Logger.Error("查询数据库失败，添加定时任务失败", "err", err)
+		logger.Logger.Errorf("查询数据库失败，添加定时任务失败, err: %v", err)
 		return
 	}
 
@@ -25,33 +28,42 @@ func OnlinePlayerGet(interval, saveTime int, uidMapEnable bool) {
 			continue
 		}
 
-		room, worlds, roomSetting, err := fetchGameInfo(rbs.RoomID)
+		room, worlds, roomSetting, err := dao.FetchGameInfo(rbs.RoomID)
 		if err != nil {
-			logger.Logger.Error("查询数据库失败，添加定时任务失败", "err", err)
+			logger.Logger.Errorf("查询数据库失败，添加定时任务失败, err: %v", err)
 			return
 		}
 		game := dst.NewGameController(room, worlds, roomSetting, "zh")
-		var Players db.Players // 当前房间总的玩家结构体
+		var Players cache.Players // 当前房间总的玩家结构体
 		for _, world := range *worlds {
 			if game.WorldUpStatus(world.ID) {
 				players, err := game.GetOnlinePlayerList(world.ID)
 				if err == nil {
-					var ps []db.PlayerInfo
+					var ps []cache.PlayerInfo
 					for _, player := range players {
-						var playerInfo db.PlayerInfo // 单个玩家
+						// 字段依次为：uid、昵称、角色、netid、netscore、玩家存活天数、颜色
 						uidNickName := strings.Split(player, "<-@dmp@->")
+						if len(uidNickName) < 7 {
+							logger.Logger.Warnf("玩家信息解析失败，跳过: %s", player)
+							continue
+						}
+						var playerInfo cache.PlayerInfo // 单个玩家
 						playerInfo.UID = uidNickName[0]
 						playerInfo.Nickname = uidNickName[1]
 						playerInfo.Prefab = uidNickName[2]
+						playerInfo.NetID = uidNickName[3]
+						playerInfo.NetScore = uidNickName[4]
+						playerInfo.PlayerAge = uidNickName[5]
+						playerInfo.Color = uidNickName[6]
 						ps = append(ps, playerInfo)
 
 						// 玩家在线时长统计
-						db.PlayersOnlineTimeMutex.Lock()
-						if db.PlayersOnlineTime[rbs.RoomID] == nil {
-							db.PlayersOnlineTime[rbs.RoomID] = make(map[string]int)
+						cache.PlayersOnlineTimeMutex.Lock()
+						if cache.PlayersOnlineTime[rbs.RoomID] == nil {
+							cache.PlayersOnlineTime[rbs.RoomID] = make(map[string]int)
 						}
-						db.PlayersOnlineTime[rbs.RoomID][playerInfo.Nickname] = db.PlayersOnlineTime[rbs.RoomID][playerInfo.Nickname] + interval
-						db.PlayersOnlineTimeMutex.Unlock()
+						cache.PlayersOnlineTime[rbs.RoomID][playerInfo.Nickname] = cache.PlayersOnlineTime[rbs.RoomID][playerInfo.Nickname] + interval
+						cache.PlayersOnlineTimeMutex.Unlock()
 
 						// 更新uidMap
 						if uidMapEnable {
@@ -62,26 +74,77 @@ func OnlinePlayerGet(interval, saveTime int, uidMapEnable bool) {
 							}
 							err = DBHandler.uidMapDao.UpdateUidMap(&uidMap)
 							if err != nil {
-								logger.Logger.Error("更新UID MAP失败", "err", err)
+								logger.Logger.Errorf("更新UID MAP失败, err: %v", err)
 							}
 						}
 					}
 					if ps == nil {
-						ps = []db.PlayerInfo{}
+						ps = []cache.PlayerInfo{}
 					}
 					Players.PlayerInfo = ps
 					Players.Timestamp = utils.GetTimestamp()
 
-					db.PlayersStatisticMutex.Lock()
-
-					if len(db.PlayersStatistic[rbs.RoomID])*interval > parsePlayerInfoSaveTime(saveTime) {
+					cache.PlayersStatisticMutex.Lock()
+					if len(cache.PlayersStatistic[rbs.RoomID])*interval > ParsePlayerInfoSaveTime(saveTime) {
 						// db.PlayersStatistic[rbs.RoomID] = append(db.PlayersStatistic[rbs.RoomID][:0], db.PlayersStatistic[rbs.RoomID][1:]...)
-						db.PlayersStatistic[rbs.RoomID] = db.PlayersStatistic[rbs.RoomID][1:]
+						cache.PlayersStatistic[rbs.RoomID] = cache.PlayersStatistic[rbs.RoomID][1:]
 
 					}
-					db.PlayersStatistic[rbs.RoomID] = append(db.PlayersStatistic[rbs.RoomID], Players)
+					cache.PlayersStatistic[rbs.RoomID] = append(cache.PlayersStatistic[rbs.RoomID], Players)
+					// webhook 通知 数据点≥2时执行
+					if len(cache.PlayersStatistic[rbs.RoomID]) >= 2 {
+						currentPlayers := cache.PlayersStatistic[rbs.RoomID][len(cache.PlayersStatistic[rbs.RoomID])-1].PlayerInfo
+						lastPlayers := cache.PlayersStatistic[rbs.RoomID][len(cache.PlayersStatistic[rbs.RoomID])-2].PlayerInfo
 
-					db.PlayersStatisticMutex.Unlock()
+						var joinedPlayers, exitedPlayers []cache.PlayerInfo
+
+						// 构建 currentPlayers 的 UID 集合
+						currentUIDMap := make(map[string]bool)
+						for _, cp := range currentPlayers {
+							currentUIDMap[cp.UID] = true
+						}
+
+						// 构建 lastPlayers 的 UID 集合
+						lastUIDMap := make(map[string]bool)
+						for _, lp := range lastPlayers {
+							lastUIDMap[lp.UID] = true
+						}
+
+						// 退出玩家：在 last 中但不在 current 中
+						for _, lp := range lastPlayers {
+							if !currentUIDMap[lp.UID] {
+								exitedPlayers = append(exitedPlayers, lp)
+							}
+						}
+
+						// 加入玩家：在 current 中但不在 last 中
+						for _, cp := range currentPlayers {
+							if !lastUIDMap[cp.UID] {
+								joinedPlayers = append(joinedPlayers, cp)
+							}
+						}
+
+						if len(joinedPlayers) > 0 || len(exitedPlayers) > 0 {
+							webhook.Snd.Send(webhook.EventOnlinePlayerUpdated, rbs.RoomID, map[string]interface{}{
+								"gameID":   rbs.RoomID,
+								"gameName": rbs.RoomName,
+								"joined":   joinedPlayers,
+								"exited":   exitedPlayers,
+								"current":  currentPlayers,
+							})
+						}
+					}
+					cache.PlayersStatisticMutex.Unlock()
+
+					cache.RoomNoPlayersSecondsMutex.Lock()
+					if len(ps) == 0 {
+						// 房间中没有玩家，加对应秒数
+						cache.RoomNoPlayersSeconds[rbs.RoomID] = cache.RoomNoPlayersSeconds[rbs.RoomID] + interval
+					} else {
+						// 房间中有玩家，重置为0
+						cache.RoomNoPlayersSeconds[rbs.RoomID] = 0
+					}
+					cache.RoomNoPlayersSecondsMutex.Unlock()
 
 					// 获取到数据就执行下一个房间
 					goto LOOP
@@ -94,7 +157,7 @@ func OnlinePlayerGet(interval, saveTime int, uidMapEnable bool) {
 
 func SystemMetricsGet(maxHour int) {
 	netUP, netDown := utils.NetStatus()
-	sysMetrics := db.SysMetrics{
+	sysMetrics := cache.SysMetrics{
 		Timestamp:   utils.GetTimestamp(),
 		Cpu:         utils.CpuUsage(),
 		Memory:      utils.MemoryUsage(),
@@ -103,10 +166,14 @@ func SystemMetricsGet(maxHour int) {
 		Disk:        utils.DiskUsage(),
 	}
 
-	if len(db.SystemMetrics) > maxHour*60 {
-		db.SystemMetrics = db.SystemMetrics[1:]
+	cache.SystemMetricsMutex.Lock()
+
+	if len(cache.SystemMetrics) > maxHour*60 {
+		cache.SystemMetrics = cache.SystemMetrics[1:]
 	}
-	db.SystemMetrics = append(db.SystemMetrics, sysMetrics)
+	cache.SystemMetrics = append(cache.SystemMetrics, sysMetrics)
+
+	cache.SystemMetricsMutex.Unlock()
 }
 
 func GameUpdate(enable bool, restart bool) {
@@ -114,7 +181,7 @@ func GameUpdate(enable bool, restart bool) {
 		return
 	}
 
-	if db.DstUpdating {
+	if cache.DstUpdating {
 		return
 	}
 
@@ -122,24 +189,26 @@ func GameUpdate(enable bool, restart bool) {
 
 	v := GetDSTVersion()
 	if v.Local < v.Server {
-		logger.Logger.Info("检测到游戏需要更新")
-		logger.Logger.Info("开始执行游戏更新")
+		logger.Logger.Info("[定时任务]：检测到游戏需要更新")
+		logger.Logger.Info("[定时任务]：开始执行游戏更新")
 
-		db.DstUpdating = true
+		cache.DstUpdating = true
 
 		updateCmd := fmt.Sprintf("cd ~/steamcmd && ./steamcmd.sh +login anonymous +force_install_dir /root/dst +app_update 343050 validate +quit")
 		_ = utils.BashCMD(updateCmd)
 
-		logger.Logger.Info("游戏更新结束")
+		logger.Logger.Info("[定时任务]：游戏更新结束")
 
-		db.DstUpdating = false
+		webhook.Snd.Send(webhook.EventGameUpdate, 0, "[定时任务]：游戏更新结束")
+
+		cache.DstUpdating = false
 
 		// 如果设置了更新后重启游戏
 		if restart {
 			// 1. 获取所有的房间
 			roomsBasic, err := DBHandler.roomDao.GetRoomBasic()
 			if err != nil {
-				logger.Logger.Error("查询数据库失败，添加定时任务失败", "err", err)
+				logger.Logger.Errorf("查询数据库失败，添加定时任务失败, err: %v", err)
 				return
 			}
 
@@ -153,9 +222,9 @@ func GameUpdate(enable bool, restart bool) {
 				logger.Logger.Debugf("开始重启房间：%s(%d)", rbs.RoomName, rbs.RoomID)
 
 				// 3. 重启房间内所有的世界
-				room, worlds, roomSetting, err := fetchGameInfo(rbs.RoomID)
+				room, worlds, roomSetting, err := dao.FetchGameInfo(rbs.RoomID)
 				if err != nil {
-					logger.Logger.Error("查询数据库失败，添加定时任务失败", "err", err)
+					logger.Logger.Errorf("查询数据库失败，添加定时任务失败, err: %v", err)
 					return
 				}
 				game := dst.NewGameController(room, worlds, roomSetting, "zh")
@@ -179,22 +248,32 @@ func InternetIPUpdate() {
 	)
 	internetIp, err = GetInternetIP1()
 	if err != nil {
-		logger.Logger.Warn("调用公网ip接口1失败", "err", err)
+		logger.Logger.Warnf("调用公网ip接口1失败, err: %v", err)
 		internetIp, err = GetInternetIP2()
 		if err != nil {
-			logger.Logger.Warn("调用公网ip接口2失败", "err", err)
+			logger.Logger.Warnf("调用公网ip接口2失败, err: %v", err)
 			return
 		}
 	}
 
-	db.InternetIP = internetIp
+	logger.Logger.Info("正在更新公网ip")
+	cache.InternetIP = internetIp
 }
 
 func ModDownloadClean() {
-	if atomic.LoadInt32(&db.ModDownloadExecuting) == 0 {
-		err := utils.RemoveDir(fmt.Sprintf("%s/mods/ugc", utils.DmpFiles))
+	if atomic.LoadInt32(&cache.ModDownloadExecuting) == 0 {
+		err := utils.RemoveDir(fmt.Sprintf("%s/mods/ugc", constant.DmpFiles))
 		if err != nil {
-			logger.Logger.Warn("删除临时模组失败", "err", err)
+			logger.Logger.Warnf("删除临时模组失败, err: %v", err)
 		}
+	}
+}
+
+func ServerVersionGet() {
+	logger.Logger.Info("正在获取游戏版本")
+	version, err := getServerGameVersion()
+	if err == nil {
+		logger.Logger.Info("游戏版本获取成功")
+		cache.GameServerVersion = version
 	}
 }

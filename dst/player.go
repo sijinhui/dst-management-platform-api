@@ -3,6 +3,7 @@ package dst
 import (
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
+	"dst-management-platform-api/webhook"
 	"fmt"
 	"regexp"
 	"strings"
@@ -22,17 +23,16 @@ func getPlayerList(filepath string) []string {
 	// 预留位 黑名单 管理员
 	err := utils.EnsureFileExists(filepath)
 	if err != nil {
-		logger.Logger.Error("创建文件失败", "err", err, "file", filepath)
+		logger.Logger.Errorf("创建文件失败, err: %v, file: %v", err, filepath)
 		return []string{}
 	}
 	al, err := utils.ReadLinesToSlice(filepath)
 	if err != nil {
-		logger.Logger.Error("读取文件失败", "err", err, "file", filepath)
+		logger.Logger.Errorf("读取文件失败, err: %v, file: %v", err, filepath)
 		return []string{}
 	}
 	var uidList []string
 	for _, uid := range al {
-		logger.Logger.Debug(uid)
 		if uid == "" || strings.HasPrefix(uid, " ") {
 			continue
 		}
@@ -67,6 +67,14 @@ func (g *Game) savePlayerList() error {
 }
 
 func (g *Game) addPlayerList(uids []string, listType string) error {
+	defer webhook.Snd.Send(webhook.EventPlayerManage, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "add",
+		"type":     listType,
+		"uids":     strings.Join(uids, ", "),
+	})
+
 	switch listType {
 	case "adminlist":
 		g.playerSaveData.adminlist = append(g.playerSaveData.adminlist, uids...)
@@ -87,6 +95,14 @@ func (g *Game) addPlayerList(uids []string, listType string) error {
 }
 
 func (g *Game) removePlayerList(uid, listType string) error {
+	defer webhook.Snd.Send(webhook.EventPlayerManage, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "remove",
+		"type":     listType,
+		"uid":      uid,
+	})
+
 	switch listType {
 	case "adminlist":
 		if !utils.Contains(g.playerSaveData.adminlist, uid) {
@@ -110,9 +126,35 @@ func (g *Game) removePlayerList(uid, listType string) error {
 			return err
 		}
 		return g.createRoom() // 不统一处理，提升性能
+	default:
+		return fmt.Errorf("类型错误")
 	}
+}
 
-	return fmt.Errorf("类型错误")
+func (g *Game) removePlayerListAll(listType string) error {
+	defer webhook.Snd.Send(webhook.EventPlayerManage, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "remove",
+		"type":     "remove all",
+	})
+	switch listType {
+	case "adminlist":
+		g.adminlist = []string{}
+		return g.savePlayerList()
+	case "blocklist":
+		g.blocklist = []string{}
+		return g.savePlayerList()
+	case "whitelist":
+		g.whitelist = []string{}
+		err := g.savePlayerList()
+		if err != nil {
+			return err
+		}
+		return g.createRoom()
+	default:
+		return fmt.Errorf("类型错误")
+	}
 }
 
 type ChatMessage struct {
@@ -147,7 +189,7 @@ func getDstStartTime(filepath string) (time.Time, error) {
 				logger.Logger.Debugf("解析到的时间为：%s", parsedTime.Format(time.RFC3339))
 				return parsedTime, nil
 			}
-			logger.Logger.Warn("解析时间失败", "line", line, "error", err)
+			logger.Logger.Warnf("解析时间失败, line: %s, err: %v", line, err)
 		}
 	}
 
@@ -260,7 +302,7 @@ func (g *Game) chatMessages(lines int, needTime bool) ([]ChatMessage, error) {
 		}
 
 		switch parsed.Type {
-		case "Say":
+		case "Say", "Whisper":
 			matches := rePlayerChat.FindStringSubmatch(parsed.Message)
 			if matches != nil && len(matches) >= 4 {
 				chatMessage.UID = matches[1]
@@ -289,6 +331,9 @@ func (g *Game) chatMessages(lines int, needTime bool) ([]ChatMessage, error) {
 			chatMessage.Nickname = "DST"
 		}
 
+		if chatMessage.Type == "Whisper" {
+			chatMessage.Type = "Say"
+		}
 		chatMessage.Type = strings.ReplaceAll(chatMessage.Type, " ", "")
 
 		chatMessages = append(chatMessages, chatMessage)

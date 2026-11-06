@@ -1,0 +1,129 @@
+package dst
+
+import (
+	"dst-management-platform-api/cache"
+	"dst-management-platform-api/constant"
+	"dst-management-platform-api/database/models"
+	"dst-management-platform-api/logger"
+	"dst-management-platform-api/utils"
+	"fmt"
+	"sync"
+)
+
+type Game struct {
+	room    *models.Room
+	worlds  *[]models.World
+	setting *models.RoomSetting
+	lang    string
+	roomSaveData
+	worldSaveData []worldSaveData
+	playerSaveData
+	modSaveData
+	// room全局文件锁
+	roomMutex sync.Mutex
+	// world全局文件锁
+	worldMutex sync.Mutex
+	// player全局文件锁
+	playerMutex sync.Mutex
+	// acf文件锁
+	acfMutex sync.Mutex
+	// mod 文件、map锁
+	modMutex sync.Mutex
+}
+
+func NewGameController(room *models.Room, worlds *[]models.World, setting *models.RoomSetting, lang string) *Game {
+	game := &Game{
+		room:    room,
+		worlds:  worlds,
+		setting: setting,
+		lang:    lang,
+	}
+
+	game.initInfo()
+
+	return game
+}
+
+func (g *Game) initInfo() {
+	// room
+	g.clusterName = fmt.Sprintf("Cluster_%d", g.room.ID)
+	g.clusterPath = fmt.Sprintf("%s/%s", utils.ClusterPath, g.clusterName)
+	g.clusterIniPath = fmt.Sprintf("%s/cluster.ini", g.clusterPath)
+	g.clusterTokenTxtPath = fmt.Sprintf("%s/cluster_token.txt", g.clusterPath)
+
+	// worlds
+	for _, world := range *g.worlds {
+		customGameStartupCmd := world.CustomStartupCmd
+		// 自定义启动命令会被拼接进 bash -c 执行，不合法时一律忽略，使用默认启动命令
+		if customGameStartupCmd != "" && !utils.IsValidGameStartupCmd(customGameStartupCmd) {
+			logger.Logger.Warnf("自定义启动命令不合法，已忽略, world: %s, cmd: %s", world.WorldName, customGameStartupCmd)
+			customGameStartupCmd = ""
+		}
+		worldPath := fmt.Sprintf("%s/%s", g.clusterPath, world.WorldName)
+		serverIniPath := fmt.Sprintf("%s/server.ini", worldPath)
+		savePath := fmt.Sprintf("%s/save", worldPath)
+		sessionPath := fmt.Sprintf("%s/session", savePath)
+		levelDataOverridePath := fmt.Sprintf("%s/leveldataoverride.lua", worldPath)
+		modOverridesPath := fmt.Sprintf("%s/modoverrides.lua", worldPath)
+		screenName := fmt.Sprintf("DMP_%s_%s", g.clusterName, world.WorldName)
+
+		startCmd := g.generateGameStartCmd(screenName, customGameStartupCmd, world.WorldName, worldPath)
+
+		g.worldSaveData = append(g.worldSaveData, worldSaveData{
+			worldPath:             worldPath,
+			serverIniPath:         serverIniPath,
+			savePath:              savePath,
+			sessionPath:           sessionPath,
+			levelDataOverridePath: levelDataOverridePath,
+			modOverridesPath:      modOverridesPath,
+			startCmd:              startCmd,
+			screenName:            screenName,
+			World:                 world,
+		})
+	}
+
+	// players
+	g.adminlistPath = fmt.Sprintf("%s/adminlist.txt", g.clusterPath)
+	g.whitelistPath = fmt.Sprintf("%s/whitelist.txt", g.clusterPath)
+	g.blocklistPath = fmt.Sprintf("%s/blocklist.txt", g.clusterPath)
+	g.adminlist = getPlayerList(g.adminlistPath)
+	g.whitelist = getPlayerList(g.whitelistPath)
+	g.blocklist = getPlayerList(g.blocklistPath)
+
+	// mods
+	if cache.OsType == constant.Darwin {
+		g.ugcPath = fmt.Sprintf("%s/%s/%s", cache.CurrentDir, constant.DarwinGameUgcPath, g.clusterName)
+		g.notUgcPath = constant.DarwinGameNotUgcPath
+	} else {
+		g.ugcPath = fmt.Sprintf("%s/%s/%s", cache.CurrentDir, constant.GameUgcPath, g.clusterName)
+		g.notUgcPath = constant.GameNotUgcPath
+	}
+
+}
+
+func (g *Game) generateGameStartCmd(screenName, customGameStartupCmd, worldName, worldPath string) string {
+	var startCmd string
+
+	// screenName和worldName来自数据库/存档，统一使用ShellQuote，避免被拼接进bash后解释执行
+	quotedScreenName := utils.ShellQuote(screenName)
+	quotedWorldName := utils.ShellQuote(worldName)
+	// 将screen输出记录到世界目录下，便于在日志页面查看启动日志
+	quotedScreenLogPath := utils.ShellQuote(fmt.Sprintf("%s/screen_startup.log", worldPath))
+
+	if cache.OsType == constant.Darwin {
+		startCmd = fmt.Sprintf("export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:%s/steamcmd && cd %s && screen -d -h 200 -m -S %s %s ./dontstarve_dedicated_server_nullrenderer -console -cluster %s -shard %s", cache.CurrentDir, constant.DarwinDstBinDir, quotedScreenName, customGameStartupCmd, g.clusterName, quotedWorldName)
+	} else {
+		switch g.setting.StartType {
+		case "32-bit":
+			startCmd = fmt.Sprintf("cd dst/bin/ && screen -L -Logfile %s -d -h 200 -m -S %s %s ./dontstarve_dedicated_server_nullrenderer -console -cluster %s -shard %s", quotedScreenLogPath, quotedScreenName, customGameStartupCmd, g.clusterName, quotedWorldName)
+		case "64-bit":
+			startCmd = fmt.Sprintf("cd dst/bin64/ && screen -L -Logfile %s -d -h 200 -m -S %s %s ./dontstarve_dedicated_server_nullrenderer_x64 -console -cluster %s -shard %s", quotedScreenLogPath, quotedScreenName, customGameStartupCmd, g.clusterName, quotedWorldName)
+		case "luajit":
+			startCmd = fmt.Sprintf("cd dst/bin64/ && screen -L -Logfile %s -d -h 200 -m -S %s %s ./dontstarve_dedicated_server_nullrenderer_x64_luajit -console -cluster %s -shard %s", quotedScreenLogPath, quotedScreenName, customGameStartupCmd, g.clusterName, quotedWorldName)
+		default:
+			startCmd = "exit 1"
+		}
+	}
+
+	return startCmd
+}

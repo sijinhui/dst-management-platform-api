@@ -1,14 +1,14 @@
 package room
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/middleware"
-	"dst-management-platform-api/utils"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	v := r.Group(utils.ApiVersion)
+	v := r.Group(constant.ApiVersion)
 	{
 		room := v.Group("room")
 		room.Use(middleware.TokenCheck())
@@ -19,11 +19,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			room.GET("/list", h.listGet)
 			room.GET("/factor", h.factorGet)
 			room.GET("/basic", h.allRoomBasicGet)
+			room.GET("/permitted/basic", h.allRoomPermittedBasicGet)
 			room.GET("/worlds", h.roomWorldsGet)
+			room.GET("/metrics", h.roomMetricsGet)
+			room.PUT("/worlds/custom/cmd", middleware.AdminOnly(), h.worldCustomStartupCmdPut)
 			room.POST("/upload", h.uploadPost)
 			room.POST("/activate", h.activatePost)
 			room.POST("/deactivate", h.deactivatePost)
 			room.DELETE("", middleware.AdminOnly(), h.roomDelete)
+			room.POST("/webhook/test", middleware.TokenCheck(), webhookTestPost)
+			room.GET("/webhook/events", middleware.TokenCheck(), webhookEventsGet)
+			room.POST("/favorite", h.favoritePost)
+			room.GET("/favorite", h.favoriteGet)
+			room.GET("/favorite/:id", h.favoriteDetailGet)
+			room.PUT("/favorite", h.favoritePut)
+			room.DELETE("/favorite", h.favoriteDelete)
+			room.POST("/favorite/apply", h.favoriteApplyPost)
 		}
 	}
 }

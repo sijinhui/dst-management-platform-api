@@ -1,21 +1,24 @@
 package mod
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/middleware"
-	"dst-management-platform-api/utils"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	v := r.Group(utils.ApiVersion)
+	v := r.Group(constant.ApiVersion)
 	{
 		mod := v.Group("mod")
 		mod.Use(middleware.TokenCheck())
 		{
-			mod.GET("/search", modSearchGet)
+			mod.GET("/search", h.modSearchGet)
+			mod.POST("/info", h.modInfoPost)
 			mod.POST("/download", h.downloadPost)
+			mod.GET("/download/status", h.downloadStatusGet)
 			mod.GET("/downloaded", h.downloadedModsGet)
+			mod.GET("/downloaded/ids", h.downloadedModIDsGet)
 			mod.POST("/add/enable", h.addEnablePost)
 			mod.POST("/setting/disable", h.addDisablePost)
 			mod.GET("/setting/mod_config_struct", h.settingModConfigStructGet)
@@ -23,6 +26,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			mod.PUT("/setting/mod_config_value", h.settingModConfigValuePut)
 			mod.GET("/setting/enabled", h.getEnabledModsGet)
 			mod.POST("/delete", h.deletePost)
+			mod.POST("/delete/multi", h.deletePostMulti)
 			mod.DELETE("/delete/acf", h.acfDelete)
 		}
 	}

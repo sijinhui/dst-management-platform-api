@@ -22,14 +22,14 @@ func InitDB(dbPath string) {
 	}
 
 	var err error
-	dsn := fmt.Sprintf("%s/dmp.db?cache=shared", dbPath)
+	dsn := fmt.Sprintf("%s/dmp.db?cache=shared&_pragma=busy_timeout(5000)", dbPath)
 	logger.Logger.Debug(fmt.Sprintf("数据库连接为%s", dsn))
 
 	DB, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: dbLogger.Default.LogMode(dbLogger.Silent),
 	})
 	if err != nil {
-		logger.Logger.Error("数据库连接失败", "err", err)
+		logger.Logger.Errorf("数据库连接失败, err: %v", err)
 		panic(fmt.Sprintf("数据库连接失败: %s", err.Error()))
 	}
 
@@ -44,23 +44,31 @@ func InitDB(dbPath string) {
 	DB.Exec("PRAGMA mmap_size=0")
 
 	logger.Logger.Info("数据库连接成功")
-
-	CheckTables()
 }
 
-func CheckTables() {
+var AllTables = []any{
+	&models.User{},
+	&models.System{},
+	&models.Room{},
+	&models.World{},
+	&models.RoomSetting{},
+	&models.GlobalSetting{},
+	&models.UidMap{},
+	&models.Plugin{},
+	&models.DstImage{},
+	&models.RoomAISetting{},
+	&models.ModInfo{},
+	&models.MapImage{},
+	&models.Favorite{},
+	&models.CloudLink{},
+	&models.CloudFavoriteMap{},
+}
+
+func AutoMigrate() {
 	logger.Logger.Debug("正在检查数据库表结构")
-	err := DB.AutoMigrate(
-		&models.User{},
-		&models.System{},
-		&models.Room{},
-		&models.World{},
-		&models.RoomSetting{},
-		&models.GlobalSetting{},
-		&models.UidMap{},
-	)
+	err := DB.AutoMigrate(AllTables...)
 	if err != nil {
-		logger.Logger.Error("数据库表结构检查失败", "err", err)
+		logger.Logger.Errorf("数据库表结构检查失败, err: %v", err)
 		panic(fmt.Sprintf("数据库表结构检查失败: %s", err.Error()))
 	}
 	logger.Logger.Debug("数据库表结构检查完成")

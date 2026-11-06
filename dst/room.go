@@ -1,9 +1,11 @@
 package dst
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
+	"dst-management-platform-api/webhook"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,7 +62,7 @@ func (g *Game) createRoom() error {
 	}
 
 	// 创建备份目录
-	_ = utils.EnsureDirExists(fmt.Sprintf("%s/backup/%d", utils.DmpFiles, g.room.ID))
+	_ = utils.EnsureDirExists(fmt.Sprintf("%s/backup/%d", constant.DmpFiles, g.room.ID))
 
 	return nil
 }
@@ -133,12 +135,16 @@ master_ip = ` + g.room.MasterIP + `
 master_port = ` + strconv.Itoa(g.room.MasterPort) + `
 cluster_key = ` + g.room.ClusterKey + steamGroupSetting
 
-	logger.Logger.Debug(contents)
+	//logger.Logger.Debug(contents)
 
 	return contents
 }
 
 func (g *Game) reset(force bool) error {
+	defer webhook.Snd.Send(webhook.EventGameReset, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+	})
 	if force {
 		defer func() {
 			_ = g.startAllWorld()
@@ -155,7 +161,7 @@ func (g *Game) reset(force bool) error {
 			err = utils.RemoveDir(world.savePath)
 			if err != nil {
 				allSuccess = false
-				logger.Logger.Error("删除存档文件失败", "err", err)
+				logger.Logger.Errorf("删除存档文件失败, err: %v", err)
 			}
 		}
 
@@ -228,16 +234,19 @@ func (g *Game) sessionInfo() *RoomSessionInfo {
 		return &roomSessionInfo
 	}
 
-	// 创建 Lua 虚拟机
-	L := lua.NewState()
+	// 创建 Lua 虚拟机（沙箱化）
+	L := utils.NewSafeLuaState()
 	defer L.Close()
 
 	// 将文件内容作为 Lua 代码执行
 	content := string(data)
-	content = content[:len(content)-1]
+	if len(content) > 0 {
+		content = content[:len(content)-1]
+	}
 
 	err = L.DoString(content)
 	if err != nil {
+		logger.Logger.Warnf("解析模组配置失败，可能含有lua注入，终止：%v", err)
 		return &roomSessionInfo
 	}
 	// 获取 Lua 脚本的返回值
@@ -322,7 +331,7 @@ func (g *Game) backup() error {
 	fileName := fmt.Sprintf("%s<-@dmp@->%d<-@dmp@->%d", g.room.GameName, cycle, ts)
 	fileNameEncode := utils.Base64Encode(fileName) + ".zip"
 
-	zipPath := fmt.Sprintf("%s/backup/%d", utils.DmpFiles, g.room.ID)
+	zipPath := fmt.Sprintf("%s/backup/%d", constant.DmpFiles, g.room.ID)
 	err = utils.EnsureDirExists(zipPath)
 	if err != nil {
 		return err
@@ -335,11 +344,17 @@ func (g *Game) backup() error {
 		return err
 	}
 
+	webhook.Snd.Send(webhook.EventGameBackup, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "执行备份",
+	})
+
 	return nil
 }
 
 func (g *Game) restore(filename string) (*SaveJson, error) {
-	zipPath := fmt.Sprintf("%s/backup/%d", utils.DmpFiles, g.room.ID)
+	zipPath := fmt.Sprintf("%s/backup/%d", constant.DmpFiles, g.room.ID)
 	filePath := fmt.Sprintf("%s/%s", zipPath, filename)
 	err := utils.Unzip(filePath, zipPath)
 	if err != nil {
@@ -373,6 +388,12 @@ func (g *Game) restore(filename string) (*SaveJson, error) {
 		return nil, err
 	}
 
+	webhook.Snd.Send(webhook.EventGameBackup, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "备份恢复",
+	})
+
 	return &saveJson, nil
 }
 
@@ -385,7 +406,7 @@ type BackupFile struct {
 }
 
 func (g *Game) getBackups() ([]BackupFile, error) {
-	zipPath := fmt.Sprintf("%s/backup/%d", utils.DmpFiles, g.room.ID)
+	zipPath := fmt.Sprintf("%s/backup/%d", constant.DmpFiles, g.room.ID)
 	zipFiles, err := utils.GetFiles(zipPath)
 	if err != nil {
 		return []BackupFile{}, err
@@ -420,7 +441,7 @@ func (g *Game) getBackups() ([]BackupFile, error) {
 
 		size, err := utils.GetFileSize(fmt.Sprintf("%s/%s", zipPath, filename))
 		if err != nil {
-			logger.Logger.Warn("获取备份文件大小失败", "err", err)
+			logger.Logger.Warnf("获取备份文件大小失败, err: %v", err)
 		}
 
 		backupFile = append(backupFile, BackupFile{
@@ -442,13 +463,19 @@ func (g *Game) getBackups() ([]BackupFile, error) {
 func (g *Game) deleteBackups(filenames []string) int {
 	s := 0
 	for _, filename := range filenames {
-		filePath := fmt.Sprintf("%s/backup/%d/%s", utils.DmpFiles, g.room.ID, filename)
+		filePath := fmt.Sprintf("%s/backup/%d/%s", constant.DmpFiles, g.room.ID, filename)
 		err := utils.RemoveFile(filePath)
 		if err != nil {
-			logger.Logger.Error("删除备份文件失败", "err", err)
+			logger.Logger.Errorf("删除备份文件失败, err: %v", err)
 		}
 		s++
 	}
+
+	webhook.Snd.Send(webhook.EventGameBackup, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "删除备份",
+	})
 
 	return s
 }
@@ -533,7 +560,7 @@ func (g *Game) deleteRoom() error {
 		return err
 	}
 	// 删除备份
-	err = utils.RemoveDir(fmt.Sprintf("%s/backup/%d", utils.DmpFiles, g.room.ID))
+	err = utils.RemoveDir(fmt.Sprintf("%s/backup/%d", constant.DmpFiles, g.room.ID))
 	if err != nil {
 		return err
 	}
@@ -571,6 +598,12 @@ func (g *Game) deleteSnapshot(filename string) error {
 			return err
 		}
 	}
+
+	webhook.Snd.Send(webhook.EventGameBackup, g.room.ID, map[string]interface{}{
+		"gameID":   g.room.ID,
+		"gameName": g.room.GameName,
+		"action":   "删除快照",
+	})
 
 	return nil
 }

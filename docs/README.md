@@ -8,6 +8,12 @@
 ![GitHub License](https://img.shields.io/github/license/miracleEverywhere/dst-management-platform-api)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/miracleEverywhere/dst-management-platform-api)
 [![CodeWiki](https://img.shields.io/badge/CodeWiki-Ready-orange)](https://codewiki.google/github.com/miracleeverywhere/dst-management-platform-api)
+
+![Linux](https://img.shields.io/badge/Linux-full%20supported-brightgreen)
+![MacOS](https://img.shields.io/badge/MacOS-full%20supported-brightgreen)
+![Windows](https://img.shields.io/badge/Windows-WSL%20supported-brightgreen)
+
+
 <div>
     <img src="images/dmp.svg" height="100" alt="DMP"/>
     <h3>:sparkling_heart: Supports multi-room, multi-user, and multi-permission management :sparkling_heart:</h3>
@@ -18,7 +24,7 @@
 
 ## :strawberry: Documents
 
-**[https://miraclesses.top](https://miraclesses.top)**
+**[https://dmp.miraclesses.top](https://dmp.miraclesses.top)**
 
 ---
 
@@ -30,6 +36,17 @@ Thanks to the following developers for their code contributions to this project.
 
 ![https://github.com/miracleEverywhere/dst-management-platform-api/graphs/contributors](https://contrib.rocks/image?repo=miracleEverywhere/dst-management-platform-api)
 
+Thanks to the following group members for their contributions to the AI chat knowledge base.
+
+<div>
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=2446583163&s=100" style="width: 60px; height: 60px;" alt="2446583163">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=1770072201&s=100" style="width: 60px; height: 60px;" alt="1770072201">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=1643924918&s=100" style="width: 60px; height: 60px;" alt="1643924918">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=1810655449&s=100" style="width: 60px; height: 60px;" alt="1810655449">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=2765013630&s=100" style="width: 60px; height: 60px;" alt="2765013630">
+    <img src="https://q1.qlogo.cn/g?b=qq&nk=3230742618&s=100" style="width: 60px; height: 60px;" alt="3230742618">
+</div>
+
 ---
 
 ## :balloon: Screenshots
@@ -37,6 +54,8 @@ Thanks to the following developers for their code contributions to this project.
 ![Rooms](images/en/rooms.png)
 
 ![Dashboard](images/en/dashboard.png)
+
+![Tool](images/en/map.png)
 
 ![Game](images/en/game.png)
 
@@ -56,7 +75,5 @@ Thanks to the acceleration site:
 - [gh.llkk.cc](https://gh.llkk.cc/)
 - [github.dpik.top](https://github.dpik.top/)
 - [ghfast.top](https://ghfast.top/)
-
-Thanks to [饥荒百科](https://dontstarve.huijiwiki.com/wiki/饥荒)
 
 Thanks to [长鸽门徒](https://www.bilibili.com/opus/814456568458248259) for providing the DST emoji font

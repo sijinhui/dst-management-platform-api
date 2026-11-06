@@ -1,14 +1,14 @@
 package tools
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/middleware"
-	"dst-management-platform-api/utils"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	v := r.Group(utils.ApiVersion)
+	v := r.Group(constant.ApiVersion)
 	{
 		tools := v.Group("tools")
 		tools.Use(middleware.TokenCheck())
@@ -21,9 +21,20 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			tools.GET("/announce", h.announceGet)
 			tools.PUT("/announce", h.announcePut)
 			tools.GET("/map", h.mapGet)
+			tools.GET("/map/players", h.mapPlayersGet)
 			tools.POST("/token", middleware.AdminOnly(), tokenPost)
 			tools.GET("/snapshot", h.snapshotGet)
 			tools.DELETE("/snapshot", h.snapshotDelete)
+			tools.GET("/tmi/category", h.categoryGet)
+			tools.GET("/tmi/category/items", h.categoryItemsGet)
+			tools.POST("/tmi/console", h.consolePost)
+			tools.GET("/aichat/setting", h.aiSettingGet)
+			tools.PUT("/aichat/setting", h.aiSettingPut)
+			tools.POST("/aichat/keyword/rebuild", middleware.AdminOnly(), h.aiKeywordIndexReBuild)
+			tools.POST("/aichat/embedding/rebuild", middleware.AdminOnly(), h.aiEmbeddingIndexReBuild)
+			tools.POST("/aichat/embedding/cancel", middleware.AdminOnly(), h.aiEmbeddingIndexCancel)
+			tools.GET("/aichat/setting/base", middleware.AdminOnly(), h.aiBaseSettingGet)
+			tools.PUT("/aichat/setting/base", middleware.AdminOnly(), h.aiBaseSettingPut)
 		}
 	}
 }

@@ -1,2 +1,13 @@
 .idea
-.claude/settings.local.json
+.claude/*
+!.claude/skills/
+deliverables
+dmp
+dmp_files
+data
+logs
+manual_install.sh
+manual_update.sh
+manual_install_darwin.sh
+manual_update_darwin.sh
+AGENTS_WORK.md

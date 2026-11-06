@@ -2,17 +2,20 @@ package room
 
 import (
 	"bufio"
+	"dst-management-platform-api/aichat"
+	"dst-management-platform-api/cache"
 	"dst-management-platform-api/database/dao"
-	"dst-management-platform-api/database/db"
 	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/dst"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/scheduler"
 	"dst-management-platform-api/utils"
+	"dst-management-platform-api/webhook"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -24,18 +27,24 @@ type Handler struct {
 	userDao          *dao.UserDAO
 	worldDao         *dao.WorldDAO
 	roomSettingDao   *dao.RoomSettingDAO
+	favoriteDao      *dao.FavoriteDAO
 	globalSettingDao *dao.GlobalSettingDAO
 	uidMapDao        *dao.UidMapDAO
+	roomAISettingDao *dao.RoomAISettingDAO
+	aiManager        *aichat.Manager
 }
 
-func NewHandler(userDao *dao.UserDAO, roomDao *dao.RoomDAO, worldDao *dao.WorldDAO, roomSettingDao *dao.RoomSettingDAO, globalSettingDao *dao.GlobalSettingDAO, uidMapDao *dao.UidMapDAO) *Handler {
+func NewHandler(userDao *dao.UserDAO, roomDao *dao.RoomDAO, worldDao *dao.WorldDAO, roomSettingDao *dao.RoomSettingDAO, favoriteDao *dao.FavoriteDAO, globalSettingDao *dao.GlobalSettingDAO, uidMapDao *dao.UidMapDAO, roomAISettingDao *dao.RoomAISettingDAO, aiManager *aichat.Manager) *Handler {
 	return &Handler{
 		roomDao:          roomDao,
 		userDao:          userDao,
 		worldDao:         worldDao,
 		roomSettingDao:   roomSettingDao,
+		favoriteDao:      favoriteDao,
 		globalSettingDao: globalSettingDao,
 		uidMapDao:        uidMapDao,
+		roomAISettingDao: roomAISettingDao,
+		aiManager:        aiManager,
 	}
 }
 
@@ -46,14 +55,34 @@ type Partition struct {
 
 type XRoomWorld struct {
 	models.Room
-	Worlds  []models.World `json:"worlds"`
-	Players []db.Players   `json:"players"`
+	Worlds  []models.World  `json:"worlds"`
+	Players []cache.Players `json:"players"`
 }
 
 type XRoomTotalInfo struct {
 	RoomData        models.Room        `json:"roomData"`
 	WorldData       []models.World     `json:"worldData"`
 	RoomSettingData models.RoomSetting `json:"roomSettingData"`
+}
+
+// validateWorldNames 校验世界名是否合法
+// 世界名会被拼接进bash命令和文件路径，因此必须限定字符集；
+// 同时同一房间内世界名不能重复，否则多个世界会使用同一个目录、互相覆盖存档。
+// 返回第一个不合法的世界名和对应提示文案的i18n key，全部合法时返回空字符串
+func validateWorldNames(worlds []models.World) (string, string) {
+	seen := make(map[string]struct{}, len(worlds))
+	for _, world := range worlds {
+		name := world.WorldName
+		if !utils.IsSafeString(name) {
+			return name, "invalid world name"
+		}
+		if _, ok := seen[name]; ok {
+			return name, "duplicate world name"
+		}
+		seen[name] = struct{}{}
+	}
+
+	return "", ""
 }
 
 // 是否拥有房间创建权限
@@ -116,50 +145,52 @@ func processJobs(game *dst.Game, roomID int, roomSetting models.RoomSetting) {
 	}
 	var backupSettings []BackupSetting
 	if err := json.Unmarshal([]byte(roomSetting.BackupSetting), &backupSettings); err != nil {
-		logger.Logger.Error("获取房间备份设置失败", "err", err)
-	}
-	if roomSetting.BackupEnable {
-		if len(backupSettings) >= len(backupNames) {
-			// 新设置长度大于旧设置，直接更新
-			for i, s := range backupSettings {
-				err := scheduler.UpdateJob(&scheduler.JobConfig{
-					Name:     fmt.Sprintf("%d-%d-Backup", roomID, i),
-					Func:     scheduler.Backup,
-					Args:     []any{game},
-					TimeType: scheduler.DayType,
-					Interval: 0,
-					DayAt:    s.Time,
-				})
-				if err != nil {
-					logger.Logger.Error("备份定时任务处理失败", "err", err)
-				}
-			}
-		} else {
-			// 新设置长度小于旧设置，超出的删除
-			for i, jobName := range backupNames {
-				if i >= len(backupSettings) {
-					scheduler.DeleteJob(jobName)
-				} else {
+		logger.Logger.Errorf("获取房间备份设置失败, err: %v", err)
+	} else {
+		if roomSetting.BackupEnable {
+			if len(backupSettings) >= len(backupNames) {
+				// 新设置长度大于旧设置，直接更新
+				for i, s := range backupSettings {
 					err := scheduler.UpdateJob(&scheduler.JobConfig{
 						Name:     fmt.Sprintf("%d-%d-Backup", roomID, i),
 						Func:     scheduler.Backup,
 						Args:     []any{game},
 						TimeType: scheduler.DayType,
 						Interval: 0,
-						DayAt:    backupSettings[i].Time,
+						DayAt:    s.Time,
 					})
 					if err != nil {
-						logger.Logger.Error("备份定时任务处理失败", "err", err)
+						logger.Logger.Errorf("备份定时任务处理失败, err: %v", err)
+					}
+				}
+			} else {
+				// 新设置长度小于旧设置，超出的删除
+				for i, jobName := range backupNames {
+					if i >= len(backupSettings) {
+						scheduler.DeleteJob(jobName)
+					} else {
+						err := scheduler.UpdateJob(&scheduler.JobConfig{
+							Name:     fmt.Sprintf("%d-%d-Backup", roomID, i),
+							Func:     scheduler.Backup,
+							Args:     []any{game},
+							TimeType: scheduler.DayType,
+							Interval: 0,
+							DayAt:    backupSettings[i].Time,
+						})
+						if err != nil {
+							logger.Logger.Errorf("备份定时任务处理失败, err: %v", err)
+						}
 					}
 				}
 			}
-		}
-	} else {
-		// 删除所有备份任务
-		for _, jobName := range backupNames {
-			scheduler.DeleteJob(jobName)
+		} else {
+			// 删除所有备份任务
+			for _, jobName := range backupNames {
+				scheduler.DeleteJob(jobName)
+			}
 		}
 	}
+
 	// 备份清理 //
 	if roomSetting.BackupCleanEnable {
 		err := scheduler.UpdateJob(&scheduler.JobConfig{
@@ -171,11 +202,12 @@ func processJobs(game *dst.Game, roomID int, roomSetting models.RoomSetting) {
 			DayAt:    "05:16:27",
 		})
 		if err != nil {
-			logger.Logger.Error("备份清理定时任务处理失败", "err", err)
+			logger.Logger.Errorf("备份清理定时任务处理失败, err: %v", err)
 		}
 	} else {
 		scheduler.DeleteJob(fmt.Sprintf("%d-BackupClean", roomID))
 	}
+
 	// 重启 //
 	if roomSetting.RestartEnable {
 		err := scheduler.UpdateJob(&scheduler.JobConfig{
@@ -187,10 +219,35 @@ func processJobs(game *dst.Game, roomID int, roomSetting models.RoomSetting) {
 			DayAt:    roomSetting.RestartSetting,
 		})
 		if err != nil {
-			logger.Logger.Error("重启定时任务处理失败", "err", err)
+			logger.Logger.Errorf("自动重启定时任务处理失败, err: %v", err)
 		}
 	} else {
 		scheduler.DeleteJob(fmt.Sprintf("%d-Restart", roomID))
+	}
+	// 重置 //
+	if roomSetting.ResetEnable {
+		var resetSetting struct {
+			Force bool   `json:"force"`
+			Time  string `json:"time"`
+			Days  int    `json:"days"`
+		}
+		if err := json.Unmarshal([]byte(roomSetting.ResetSetting), &resetSetting); err != nil {
+			logger.Logger.Errorf("获取自动重置设置失败, err: %v", err)
+		} else {
+			err := scheduler.UpdateJob(&scheduler.JobConfig{
+				Name:     fmt.Sprintf("%d-Reset", roomID),
+				Func:     scheduler.Reset,
+				Args:     []any{game, roomID, resetSetting.Force, resetSetting.Days},
+				TimeType: scheduler.DayType,
+				Interval: 0,
+				DayAt:    resetSetting.Time,
+			})
+			if err != nil {
+				logger.Logger.Errorf("自动重置定时任务处理失败, err: %v", err)
+			}
+		}
+	} else {
+		scheduler.DeleteJob(fmt.Sprintf("%d-Reset", roomID))
 	}
 	// 自动开启关闭游戏
 	if roomSetting.ScheduledStartStopEnable {
@@ -200,29 +257,30 @@ func processJobs(game *dst.Game, roomID int, roomSetting models.RoomSetting) {
 		}
 		var scheduledStartStopSetting ScheduledStartStopSetting
 		if err := json.Unmarshal([]byte(roomSetting.ScheduledStartStopSetting), &scheduledStartStopSetting); err != nil {
-			logger.Logger.Error("获取自动开启关闭游戏设置失败", "err", err)
-		}
-		err := scheduler.UpdateJob(&scheduler.JobConfig{
-			Name:     fmt.Sprintf("%d-ScheduledStart", roomID),
-			Func:     scheduler.ScheduledStart,
-			Args:     []any{game},
-			TimeType: scheduler.DayType,
-			Interval: 0,
-			DayAt:    scheduledStartStopSetting.Start,
-		})
-		if err != nil {
-			logger.Logger.Error("自动开启游戏任务处理失败", "err", err)
-		}
-		err = scheduler.UpdateJob(&scheduler.JobConfig{
-			Name:     fmt.Sprintf("%d-ScheduledStop", roomID),
-			Func:     scheduler.ScheduledStop,
-			Args:     []any{game},
-			TimeType: scheduler.DayType,
-			Interval: 0,
-			DayAt:    scheduledStartStopSetting.Stop,
-		})
-		if err != nil {
-			logger.Logger.Error("自动关闭游戏任务处理失败", "err", err)
+			logger.Logger.Errorf("获取自动开启关闭游戏设置失败, err: %v", err)
+		} else {
+			err := scheduler.UpdateJob(&scheduler.JobConfig{
+				Name:     fmt.Sprintf("%d-ScheduledStart", roomID),
+				Func:     scheduler.ScheduledStart,
+				Args:     []any{game},
+				TimeType: scheduler.DayType,
+				Interval: 0,
+				DayAt:    scheduledStartStopSetting.Start,
+			})
+			if err != nil {
+				logger.Logger.Errorf("自动开启游戏任务处理失败, err: %v", err)
+			}
+			err = scheduler.UpdateJob(&scheduler.JobConfig{
+				Name:     fmt.Sprintf("%d-ScheduledStop", roomID),
+				Func:     scheduler.ScheduledStop,
+				Args:     []any{game},
+				TimeType: scheduler.DayType,
+				Interval: 0,
+				DayAt:    scheduledStartStopSetting.Stop,
+			})
+			if err != nil {
+				logger.Logger.Errorf("自动关闭游戏任务处理失败, err: %v", err)
+			}
 		}
 	} else {
 		scheduler.DeleteJob(fmt.Sprintf("%d-ScheduledStart", roomID))
@@ -239,10 +297,102 @@ func processJobs(game *dst.Game, roomID int, roomSetting models.RoomSetting) {
 			DayAt:    "",
 		})
 		if err != nil {
-			logger.Logger.Error("自动保活定时任务处理失败", "err", err)
+			logger.Logger.Errorf("自动保活定时任务处理失败, err: %v", err)
 		}
 	} else {
 		scheduler.DeleteJob(fmt.Sprintf("%d-Keepalive", roomID))
+	}
+	// 房间资源监控 //
+	if roomSetting.RoomMetricsEnable {
+		err := scheduler.UpdateJob(&scheduler.JobConfig{
+			Name:     fmt.Sprintf("%d-RoomMetrics", roomID),
+			Func:     scheduler.RoomMetricsGet,
+			Args:     []any{game, roomID},
+			TimeType: scheduler.MinuteType,
+			Interval: scheduler.RoomMetricsGetInInterval,
+			DayAt:    "",
+		})
+		if err != nil {
+			logger.Logger.Errorf("房间资源监控定时任务处理失败, err: %v", err)
+		}
+	} else {
+		scheduler.DeleteJob(fmt.Sprintf("%d-RoomMetrics", roomID))
+	}
+	// 玩家更新模组
+	if roomSetting.PlayerUpdateModEnable {
+		errFalse := scheduler.UpdateJob(&scheduler.JobConfig{
+			Name:     fmt.Sprintf("%d-PlayerUpdateModFalse", roomID),
+			Func:     scheduler.PlayerUpdateMod,
+			Args:     []any{game, false},
+			TimeType: scheduler.SecondType,
+			Interval: scheduler.PlayerUpdateModFalseInterval,
+			DayAt:    "",
+		})
+		if errFalse != nil {
+			logger.Logger.Errorf("玩家更新模组定时任务处理失败, err: %v", errFalse)
+		}
+		errTrue := scheduler.UpdateJob(&scheduler.JobConfig{
+			Name:     fmt.Sprintf("%d-PlayerUpdateModTrue", roomID),
+			Func:     scheduler.PlayerUpdateMod,
+			Args:     []any{game, true},
+			TimeType: scheduler.SecondType,
+			Interval: scheduler.PlayerUpdateModTrueInterval,
+			DayAt:    "",
+		})
+		if errTrue != nil {
+			logger.Logger.Errorf("玩家更新模组定时任务处理失败, err: %v", errTrue)
+		}
+	} else {
+		scheduler.DeleteJob(fmt.Sprintf("%d-PlayerUpdateModFalse", roomID))
+		scheduler.DeleteJob(fmt.Sprintf("%d-PlayerUpdateModTrue", roomID))
+	}
+}
+
+// worldIDByName 世界名到世界ID的映射，世界名是房间内世界的唯一标识
+func worldIDByName(worlds []models.World) map[string]int {
+	worldIDs := make(map[string]int, len(worlds))
+	for _, world := range worlds {
+		worldIDs[world.WorldName] = world.ID
+	}
+	return worldIDs
+}
+
+// deleteWorldMetrics 删除世界监控数据
+func deleteWorldMetrics(worldIDMaps ...map[string]int) {
+	cache.WorldMetricsMutex.Lock()
+	defer cache.WorldMetricsMutex.Unlock()
+
+	for _, worldIDMap := range worldIDMaps {
+		for _, worldID := range worldIDMap {
+			delete(cache.WorldMetrics, worldID)
+		}
+	}
+}
+
+// migrateWorldMetrics 房间保存时按世界名迁移世界监控数据
+// 房间保存会删除并重建世界（世界ID发生变化），直接按ID清理会丢失已有的监控历史
+func migrateWorldMetrics(oldWorldIDMap, newWorldIDMap map[string]int) {
+	cache.WorldMetricsMutex.Lock()
+	defer cache.WorldMetricsMutex.Unlock()
+
+	// 先取出旧世界的数据，避免新旧世界ID交叉时互相覆盖
+	oldMetrics := make(map[string][]cache.WorldMetricsData, len(oldWorldIDMap))
+	for worldName, oldWorldID := range oldWorldIDMap {
+		if metrics, ok := cache.WorldMetrics[oldWorldID]; ok {
+			oldMetrics[worldName] = metrics
+		}
+	}
+
+	// 清理该房间全部旧世界的数据
+	for _, oldWorldID := range oldWorldIDMap {
+		delete(cache.WorldMetrics, oldWorldID)
+	}
+
+	// 按世界名写回到新的世界ID，已删除的世界不再写入
+	for worldName, newWorldID := range newWorldIDMap {
+		if metrics, ok := oldMetrics[worldName]; ok {
+			cache.WorldMetrics[newWorldID] = metrics
+		}
 	}
 }
 
@@ -308,6 +458,9 @@ func handleUpload(savePath, unzipPath string, room *models.Room, worlds *[]model
 	room.Description = clusterIni["cluster_description"]
 	if clusterIni["game_mode"] == "" {
 		return "cluster.ini game_mode not found", fmt.Errorf("未发现游戏模式")
+	}
+	if !utils.IsValidGameMode(clusterIni["game_mode"]) {
+		return "cluster.ini game_mode invalid", fmt.Errorf("无效的游戏模式: %s", clusterIni["game_mode"])
 	}
 	room.GameMode = clusterIni["game_mode"]
 	maxPlayer, err := strconv.Atoi(clusterIni["max_players"])
@@ -380,6 +533,16 @@ func handleUpload(savePath, unzipPath string, room *models.Room, worlds *[]model
 	} else {
 		roomSetting.TickRate = tickRate
 	}
+	// steam 群组设置
+	room.SteamGroupID = clusterIni["steam_group_id"]
+	room.SteamGroupAdmins, err = strconv.ParseBool(clusterIni["steam_group_admins"])
+	if err != nil {
+		room.SteamGroupAdmins = false
+	}
+	room.SteamGroupOnly, err = strconv.ParseBool(clusterIni["steam_group_only"])
+	if err != nil {
+		room.SteamGroupOnly = false
+	}
 
 	// 6. 读取世界目录
 	allWorldsPath, err := utils.GetDirs(clusterDir, false)
@@ -392,6 +555,11 @@ func handleUpload(savePath, unzipPath string, room *models.Room, worlds *[]model
 		if strings.HasPrefix(i, "__") {
 			continue
 		}
+		// worldPath会放入bash命令中，需要校验worldName
+		if !isSafeWorldDir(i) {
+			return "get worlds path fail", fmt.Errorf("非法的世界目录名")
+		}
+
 		var (
 			world     models.World
 			worldPath WorldPath
@@ -421,20 +589,22 @@ func handleUpload(savePath, unzipPath string, room *models.Room, worlds *[]model
 			return "read is_master from server.ini fail", err
 		}
 		world.IsMaster = isMaster
-		if serverIni["name"] == "" {
+		// 世界名会被拼接进bash命令和文件路径，必须使用校验后的值
+		worldName := serverIni["name"]
+		if worldName == "" {
+			// 兼容缺失name字段的存档，按主/从节点设置默认名
 			if isMaster {
 				logger.Logger.Info("世界名获取异常，设置为默认值Master")
-				world.WorldName = "Master"
-				worldPath.name = "Master"
+				worldName = "Master"
 			} else {
 				logger.Logger.Info("世界名获取异常，设置为默认值Caves")
-				world.WorldName = "Caves"
-				worldPath.name = "Caves"
+				worldName = "Caves"
 			}
-		} else {
-			world.WorldName = serverIni["name"]
-			worldPath.name = serverIni["name"]
 		}
+		world.WorldName = worldName
+		// worldPath.name用于拼接复制目标目录，而目标目录由world.WorldName创建，两者必须一致，
+		// 否则存档会被复制到错误的目录，甚至覆盖其他世界的存档
+		worldPath.name = worldName
 		encodeUserPath, err := strconv.ParseBool(serverIni["encode_user_path"])
 		if err != nil {
 			logger.Logger.Info("获取encode_user_path失败，设置为默认值true")
@@ -453,17 +623,30 @@ func handleUpload(savePath, unzipPath string, room *models.Room, worlds *[]model
 				return "level data not found", fmt.Errorf("未发现世界配置")
 			}
 		}
-		world.LevelData = levelData
+		// 归一化世界配置，剥离 BOM / Klei 引擎头等非法前缀，避免前端世界配置页解析失败
+		world.LevelData = utils.NormalizeLuaConfig(levelData)
+		if world.LevelData != levelData {
+			logger.Logger.Infof("世界配置含非法前缀(BOM/Klei头)，已自动归一化，世界目录: %s", i)
+		}
 
 		// 读取mod配置 modoverrides.lua
 		modDataPath := fmt.Sprintf("%s/%s/modoverrides.lua", clusterDir, i)
 		modData, err := utils.GetFileAllContent(modDataPath)
 		if err == nil {
-			world.ModData = modData
+			world.ModData = utils.NormalizeLuaConfig(modData)
 		}
 
 		uploadExtraInfo.worldPath = append(uploadExtraInfo.worldPath, worldPath)
 		*worlds = append(*worlds, world)
+	}
+
+	// 7. 校验存档中的世界名，非法或重复时拒绝导入，避免命令注入和存档互相覆盖
+	if worldName, msgKey := validateWorldNames(*worlds); msgKey != "" {
+		logger.Logger.Warnf("存档世界名校验失败，拒绝导入, world: %s, reason: %s", worldName, msgKey)
+		if msgKey == "duplicate world name" {
+			return "duplicate world name in save", fmt.Errorf("存档中存在重复的世界名: %s", worldName)
+		}
+		return "invalid world name in save", fmt.Errorf("存档中存在非法的世界名: %s", worldName)
 	}
 
 	return "", nil
@@ -496,6 +679,12 @@ func findClusterDir(path string) (string, error) {
 	}
 
 	return "", fmt.Errorf("未找到包含 cluster.ini 的目录")
+}
+
+func isSafeWorldDir(s string) bool {
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9/]+$`, s)
+
+	return matched
 }
 
 // 将ini文件读取为map
@@ -549,4 +738,181 @@ type UploadExtraInfo struct {
 	blocklist string
 	whitelist string
 	worldPath []WorldPath
+}
+
+// checkGamePort 检测端口是否冲突，excludeRoomID 为 0 时不排除任何房间
+// 先检测入参内部是否重复，再检测与数据库中已有的世界端口是否冲突
+// MasterPort（[SHARD] master_port）不参与检测，允许重复
+// 返回冲突的端口，0 表示无冲突
+func (h *Handler) checkGamePort(ports []int, excludeRoomID int) int {
+	// 1. 检测入参端口自身是否重复
+	seen := make(map[int]bool)
+	for _, port := range ports {
+		if seen[port] {
+			return port
+		}
+		seen[port] = true
+	}
+
+	// 2. 获取所有世界端口
+	worlds, err := h.worldDao.Query(1, 10000, nil)
+	if err != nil {
+		logger.Logger.Errorf("checkGamePort 查询世界失败, err: %v", err)
+		return 0
+	}
+
+	// 3. 已使用的端口集合
+	usedPorts := make(map[int]bool)
+	for _, world := range worlds.Data {
+		if world.RoomID != excludeRoomID {
+			usedPorts[world.ServerPort] = true
+			usedPorts[world.MasterServerPort] = true
+			usedPorts[world.AuthenticationPort] = true
+		}
+	}
+
+	// 4. 检查与已有端口是否冲突
+	for _, port := range ports {
+		if usedPorts[port] {
+			return port
+		}
+	}
+
+	return 0
+}
+
+const FavoriteTypeDST = "dst"
+
+// FavoriteItem 收藏接口返回结构，Data 解析为 JSON 对象
+type FavoriteItem struct {
+	ID        string         `json:"id"`
+	Username  string         `json:"username"`
+	Type      string         `json:"type"`
+	Data      XRoomTotalInfo `json:"data"`
+	Remark    string         `json:"remark"`
+	CreatedAt int64          `json:"createdAt"`
+	UpdatedAt int64          `json:"updatedAt"`
+}
+
+type favoriteCreateReq struct {
+	RoomID int    `json:"roomID" binding:"required"`
+	Remark string `json:"remark"`
+}
+
+type favoriteUpdateReq struct {
+	ID     string  `json:"id" binding:"required"`
+	Remark *string `json:"remark" binding:"required"`
+}
+
+type favoriteDeleteReq struct {
+	ID string `json:"id" binding:"required"`
+}
+
+type favoriteListReq struct {
+	Partition
+}
+
+type favoriteApplyReq struct {
+	ID       string `json:"id" binding:"required"`
+	GameName string `json:"gameName"`
+}
+
+// RoomSnapshot 生成 XRoomTotalInfo 房间快照，清空本地关联 ID，保留 token。
+// 收藏与云存档元数据共用该结构，保证云端看到的数据形状一致。
+func RoomSnapshot(room *models.Room, worlds *[]models.World, setting *models.RoomSetting) XRoomTotalInfo {
+	roomData := *room
+	roomData.ID = 0
+
+	worldData := make([]models.World, len(*worlds))
+	for i, world := range *worlds {
+		world.ID = 0
+		world.RoomID = 0
+		world.LastAliveTime = ""
+		worldData[i] = world
+	}
+
+	roomSetting := *setting
+	roomSetting.RoomID = 0
+
+	return XRoomTotalInfo{
+		RoomData:        roomData,
+		WorldData:       worldData,
+		RoomSettingData: roomSetting,
+	}
+}
+
+// ValidateFavoriteData 校验收藏数据，返回 i18n key 和格式化参数。
+// 云同步下载的快照同样必须经过该函数校验。
+func ValidateFavoriteData(data *XRoomTotalInfo) (string, string) {
+	if len(data.WorldData) == 0 {
+		return "favorite no worlds", ""
+	}
+
+	if worldName, msgKey := validateWorldNames(data.WorldData); msgKey != "" {
+		return msgKey, worldName
+	}
+
+	if !utils.IsValidGameMode(data.RoomData.GameMode) {
+		return "favorite invalid game mode", ""
+	}
+	if data.RoomData.GameMode == "custom" && data.RoomData.CustomGameMode != "" && !utils.IsValidGameMode(data.RoomData.CustomGameMode) {
+		return "favorite invalid game mode", ""
+	}
+
+	if strings.TrimSpace(data.RoomSettingData.WebhookSetting) != "" {
+		var webhooks []webhook.WebhookItem
+		if err := json.Unmarshal([]byte(data.RoomSettingData.WebhookSetting), &webhooks); err != nil {
+			return "favorite invalid webhook", ""
+		}
+		for _, item := range webhooks {
+			if !utils.IsValidURL(item.URL) {
+				return "invalid url", ""
+			}
+		}
+	}
+
+	return "", ""
+}
+
+// ClearFavoriteCustomStartupCmd 清空自定义启动命令，返回是否有内容被清空。
+func ClearFavoriteCustomStartupCmd(data *XRoomTotalInfo) bool {
+	cleared := false
+	for i := range data.WorldData {
+		if data.WorldData[i].CustomStartupCmd != "" {
+			data.WorldData[i].CustomStartupCmd = ""
+			cleared = true
+		}
+	}
+
+	return cleared
+}
+
+func favoriteItemFromModel(favorite *models.Favorite) (*FavoriteItem, error) {
+	var data XRoomTotalInfo
+	if err := json.Unmarshal([]byte(favorite.Data), &data); err != nil {
+		return nil, err
+	}
+
+	item := favoriteItemFromData(favorite, data)
+	return &item, nil
+}
+
+func favoriteItemFromData(favorite *models.Favorite, data XRoomTotalInfo) FavoriteItem {
+	return FavoriteItem{
+		ID:        favorite.ID,
+		Username:  favorite.Username,
+		Type:      favorite.Type,
+		Data:      data,
+		Remark:    favorite.Remark,
+		CreatedAt: favorite.CreatedAt,
+		UpdatedAt: favorite.UpdatedAt,
+	}
+}
+
+func favoriteMessage(c *gin.Context, msgKey, arg string) string {
+	if arg == "" {
+		return message.Get(c, msgKey)
+	}
+
+	return message.GetF(c, msgKey, arg)
 }

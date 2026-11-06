@@ -1,26 +1,54 @@
 package middleware
 
 import (
-	"dst-management-platform-api/database/db"
+	"dst-management-platform-api/cache"
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/models"
+	"dst-management-platform-api/i18n"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
+// TokenCheck 从 header(X-DMP-TOKEN) query(token) 中获取jwt并进行校验
 func TokenCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var (
+			err      error
+			hasToken bool
+		)
+
+		// 从header中获取
 		token := c.Request.Header.Get("X-DMP-TOKEN")
-		claims, err := utils.ValidateJWT(token, []byte(db.JwtSecret))
+
+		if token == "" {
+			token = c.Query("token")
+			if token != "" {
+				hasToken = true
+			}
+		} else {
+			hasToken = true
+		}
+
+		if !hasToken {
+			tokenMissing(c)
+			return
+		}
+
+		claims, err := utils.ValidateJWT(token, []byte(cache.JwtSecret))
 		if err != nil {
-			logger.Logger.Warnf("未授权的访问, DMP已拦截, ip为: %s", c.ClientIP())
-			c.JSON(http.StatusOK, gin.H{"code": 420, "message": utils.I18n.Get(c, "token fail"), "data": nil})
-			c.Abort()
+			tokenMissing(c)
+			return
+		}
+
+		// 校验 token 版本号，检查是否已被撤销
+		if !cache.ValidateTokenVersion(claims.Username, claims.TokenVersion) {
+			tokenRevoked(c, *claims)
 			return
 		}
 
@@ -32,11 +60,12 @@ func TokenCheck() gin.HandlerFunc {
 		if shouldRefreshToken(claims.ExpiresAt.Time) {
 			logger.Logger.Info("token有效期小于阈值，刷新token")
 			user := models.User{
-				Username: claims.Username,
-				Nickname: claims.Nickname,
-				Role:     claims.Role,
+				Username:     claims.Username,
+				Nickname:     claims.Nickname,
+				Role:         claims.Role,
+				TokenVersion: claims.TokenVersion,
 			}
-			token, err = utils.GenerateJWT(user, []byte(db.JwtSecret), utils.JwtExpirationHours)
+			token, err = utils.GenerateJWT(user, []byte(cache.JwtSecret), constant.JwtExpirationHours)
 			if err != nil {
 				logger.Logger.Errorf("刷新Token失败：%v", err)
 			} else {
@@ -56,24 +85,23 @@ func AdminOnly() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		username, exist := c.Get("username")
-		if !exist {
+		username := c.GetString("username")
+		if username == "" {
 			username = "获取失败"
 		}
-		nickname, exist := c.Get("nickname")
-		if !exist {
+		nickname := c.GetString("nickname")
+		if nickname == "" {
 			nickname = "获取失败"
 		}
-		logger.Logger.Warn("越权请求", "ip", c.ClientIP(), "user", username, "nickname", nickname)
-		c.JSON(http.StatusOK, gin.H{"code": 201, "message": utils.I18n.Get(c, "permission needed"), "data": nil})
-		c.Abort()
+
+		tokenNoPermission(c, username, nickname)
 		return
 	}
 }
 
 // CacheControl 缓存控制中间件
 func CacheControl() gin.HandlerFunc {
-	cacheDuration := 48 * time.Hour
+	cacheDuration := constant.StaticCacheHours * time.Hour
 	return func(c *gin.Context) {
 		// 只对静态资源文件设置缓存
 		if isStaticAsset(c.Request.URL.Path) {
@@ -89,25 +117,29 @@ func CacheControl() gin.HandlerFunc {
 	}
 }
 
-// 判断是否为静态资源文件
-func isStaticAsset(path string) bool {
-	staticExtensions := []string{".js", ".css", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot"}
-	for _, ext := range staticExtensions {
-		if strings.HasSuffix(path, ext) {
-			return true
+// LoginRateLimit 登录接口限速，同一用户名 1 秒内只能请求一次。
+// 以用户名为限流维度，避免伪造 X-Forwarded-For 绕过。
+func LoginRateLimit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		username, err := extractLoginUsername(c)
+
+		switch {
+		case errors.Is(err, errLoginBodyTooLarge):
+			logger.Logger.Warnf("登录请求体过大, ip: %s", c.ClientIP())
+			c.JSON(http.StatusOK, gin.H{"code": 400, "message": i18n.I18n.Get(c, "bad request"), "data": nil})
+			c.Abort()
+			return
+		case err != nil || username == "":
+			// 无法提取用户名，交给 loginPost 统一返回 400，该路径不会查库，也不会执行密码校验
+			c.Next()
+			return
 		}
+
+		if !loginRateLimiter.allow(username, time.Now()) {
+			tooManyRequests(c, username)
+			return
+		}
+
+		c.Next()
 	}
-	return false
-}
-
-// 判断是否刷新token
-func shouldRefreshToken(exp time.Time) bool {
-	remainingTime := time.Until(exp)
-
-	logger.Logger.Debugf("token剩余有效时间还剩: %.2f小时", remainingTime.Hours())
-
-	totalDuration := time.Duration(utils.JwtExpirationHours) * time.Hour
-
-	// 当剩余时间小于总有效期的 1/2 时刷新
-	return remainingTime > 0 && remainingTime < totalDuration/2
 }
