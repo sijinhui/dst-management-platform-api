@@ -1,10 +1,9 @@
 package dashboard
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/database/dao"
-	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/logger"
-	"dst-management-platform-api/utils"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,23 +30,6 @@ func NewHandler(userDao *dao.UserDAO, roomDao *dao.RoomDAO, worldDao *dao.WorldD
 		roomSettingDao:   roomSettingDao,
 		globalSettingDao: globalSettingDao,
 	}
-}
-
-func (h *Handler) fetchGameInfo(roomID int) (*models.Room, *[]models.World, *models.RoomSetting, error) {
-	room, err := h.roomDao.GetRoomByID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-	worlds, err := h.worldDao.GetWorldsByRoomID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-	roomSetting, err := h.roomSettingDao.GetRoomSettingsByRoomID(roomID)
-	if err != nil {
-		return &models.Room{}, &[]models.World{}, &models.RoomSetting{}, err
-	}
-
-	return room, worlds, roomSetting, nil
 }
 
 func (h *Handler) hasPermission(c *gin.Context, roomID string) bool {
@@ -96,7 +78,7 @@ func checkDstLobbyRoom(urls []string, clusterName string) ([]Room, error) {
 	)
 
 	client := &http.Client{
-		Timeout: utils.HttpTimeout * time.Second,
+		Timeout: constant.HttpTimeout * time.Second,
 	}
 
 	for _, url := range urls {
@@ -105,21 +87,21 @@ func checkDstLobbyRoom(urls []string, clusterName string) ([]Room, error) {
 			defer wg.Done()
 			resp, err := client.Get(u)
 			if err != nil {
-				logger.Logger.Error("请求失败", "url", u, "err", err)
+				logger.Logger.Errorf("请求失败: %v, url: %s", err, u)
 				errChanel <- err
 				return
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				logger.Logger.Warn("非200相应，跳过", "url", u)
+				logger.Logger.Warnf("非200相应，跳过, url: %s", u)
 				errChanel <- fmt.Errorf("非200响应")
 				return
 			}
 
 			var neededResponse NeededResponse
 			if err := json.NewDecoder(resp.Body).Decode(&neededResponse); err != nil {
-				logger.Logger.Error("解析JSON失败", "err", err)
+				logger.Logger.Errorf("解析JSON失败: %v", err)
 				errChanel <- err
 				return
 			}

@@ -1,20 +1,28 @@
 package server
 
-import (
-	"flag"
-)
+import "flag"
 
 var (
-	bindPort    int
-	dbPath      string
-	logLevel    string
-	versionShow bool
+	bindPort          int
+	dbPath            string
+	logLevel          string
+	versionShow       bool
+	consoleCmd        string
+	cert              string
+	key               string
+	noHttpCompression bool
+	pprof             bool
 )
 
 func bindFlags() {
 	flag.IntVar(&bindPort, "bind", 80, "DMP端口, 如: -bind 8080")
-	flag.StringVar(&dbPath, "dbpath", "./data", "数据库文件目录, 如: -dbpath ./data")
+	flag.BoolVar(&noHttpCompression, "no-http-compress", false, "http响应gzip压缩文本数据，默认启动，关闭使用：-no-http-compress")
+	flag.StringVar(&dbPath, "dbpath", "data", "数据库文件目录, 如: -dbpath ./data")
 	flag.StringVar(&logLevel, "level", "info", "日志等级, 如: -level debug")
-	flag.BoolVar(&versionShow, "v", false, "查看版本，如： -v")
+	flag.StringVar(&cert, "cert", "", "证书文件路径, 不填则启动http, 例如: /path/to/fullchain.pem")
+	flag.StringVar(&key, "key", "", "私钥文件路径, 不填则启动http, 例如: /path/to/privkey.pem")
+	flag.BoolVar(&versionShow, "v", false, "查看版本, 如: -v")
+	flag.BoolVar(&pprof, "pprof", false, "是否开启pprof")
+	flag.StringVar(&consoleCmd, "console", "", "控制台命令, 如: -console help")
 	flag.Parse()
 }

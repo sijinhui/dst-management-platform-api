@@ -132,9 +132,7 @@ func Contains[T comparable](s []T, i T) bool {
 
 // GetTimestamp 获取毫秒级时间戳
 func GetTimestamp() int64 {
-	now := time.Now()
-	milliseconds := now.UnixNano() / int64(time.Millisecond)
-	return milliseconds
+	return time.Now().UnixMilli()
 }
 
 // Base64Encode 对字符串进行Base64编码
@@ -157,9 +155,6 @@ func Base64Decode(encodedStr string) (string, error) {
 
 // RandomString 生成指定长度的随机字符串
 func RandomString(length int) string {
-	// 初始化随机种子
-	rand.NewSource(time.Now().UnixNano())
-
 	const letters = "abcdefghijklmnopqrstuvwxyz"
 
 	b := make([]byte, length)
@@ -200,4 +195,24 @@ func RemoveDuplicates[T comparable](slice []T) []T {
 	}
 
 	return result
+}
+
+// GetLastNElements 获取切片中的最后n个元素
+func GetLastNElements[T any](slice []T, n int) []T {
+	length := len(slice)
+
+	// 处理边界情况
+	if n <= 0 {
+		return []T{}
+	}
+
+	if n >= length {
+		// 如果n大于等于切片长度，返回整个切片的副本
+		result := make([]T, length)
+		copy(result, slice)
+		return result
+	}
+
+	// 使用切片操作获取最后n个元素
+	return slice[length-n:]
 }

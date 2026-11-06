@@ -1,8 +1,7 @@
 package dst
 
 import (
-	"dst-management-platform-api/database/db"
-	"dst-management-platform-api/database/models"
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
 	"fmt"
@@ -13,107 +12,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
-	"unicode"
 
 	lua "github.com/yuin/gopher-lua"
 )
-
-type Game struct {
-	room    *models.Room
-	worlds  *[]models.World
-	setting *models.RoomSetting
-	lang    string
-	roomSaveData
-	worldSaveData []worldSaveData
-	playerSaveData
-	modSaveData
-	// room全局文件锁
-	roomMutex sync.Mutex
-	// world全局文件锁
-	worldMutex sync.Mutex
-	// player全局文件锁
-	playerMutex sync.Mutex
-	// acf文件锁
-	acfMutex sync.Mutex
-	// mod 文件、map锁
-	modMutex sync.Mutex
-}
-
-var modAcfMutex sync.Mutex
-
-func NewGameController(room *models.Room, worlds *[]models.World, setting *models.RoomSetting, lang string) *Game {
-	game := &Game{
-		room:    room,
-		worlds:  worlds,
-		setting: setting,
-		lang:    lang,
-	}
-
-	game.initInfo()
-
-	return game
-}
-
-func (g *Game) initInfo() {
-	// room
-	g.clusterName = fmt.Sprintf("Cluster_%d", g.room.ID)
-	g.clusterPath = fmt.Sprintf("%s/%s", utils.ClusterPath, g.clusterName)
-	g.clusterIniPath = fmt.Sprintf("%s/cluster.ini", g.clusterPath)
-	g.clusterTokenTxtPath = fmt.Sprintf("%s/cluster_token.txt", g.clusterPath)
-
-	// worlds
-	for _, world := range *g.worlds {
-		if !utils.IsSafeString(world.WorldName) {
-			logger.Logger.Warnf("世界名 %s 可能存在注入风险，跳过", world.WorldName)
-			continue
-		}
-		worldPath := fmt.Sprintf("%s/%s", g.clusterPath, world.WorldName)
-		serverIniPath := fmt.Sprintf("%s/server.ini", worldPath)
-		savePath := fmt.Sprintf("%s/save", worldPath)
-		sessionPath := fmt.Sprintf("%s/session", savePath)
-		levelDataOverridePath := fmt.Sprintf("%s/leveldataoverride.lua", worldPath)
-		modOverridesPath := fmt.Sprintf("%s/modoverrides.lua", worldPath)
-		screenName := fmt.Sprintf("DMP_%s_%s", g.clusterName, world.WorldName)
-		screenLogPath := fmt.Sprintf("%s/%s/screen_startup.log", db.CurrentDir, worldPath)
-
-		var startCmd string
-		switch g.setting.StartType {
-		case "32-bit":
-			startCmd = fmt.Sprintf("cd dst/bin/ && screen -L -Logfile %s -d -h 200 -m -S %s ./dontstarve_dedicated_server_nullrenderer -console -cluster %s -shard %s", screenLogPath, screenName, g.clusterName, world.WorldName)
-		case "64-bit":
-			startCmd = fmt.Sprintf("cd dst/bin64/ && screen -L -Logfile %s -d -h 200 -m -S %s ./dontstarve_dedicated_server_nullrenderer_x64 -console -cluster %s -shard %s", screenLogPath, screenName, g.clusterName, world.WorldName)
-		case "luajit":
-			startCmd = fmt.Sprintf("cd dst/bin64/ && screen -L -Logfile %s -d -h 200 -m -S %s ./dontstarve_dedicated_server_nullrenderer_x64_luajit -console -cluster %s -shard %s", screenLogPath, screenName, g.clusterName, world.WorldName)
-		default:
-			startCmd = "exit 1"
-		}
-
-		g.worldSaveData = append(g.worldSaveData, worldSaveData{
-			worldPath:             worldPath,
-			serverIniPath:         serverIniPath,
-			savePath:              savePath,
-			sessionPath:           sessionPath,
-			levelDataOverridePath: levelDataOverridePath,
-			modOverridesPath:      modOverridesPath,
-			startCmd:              startCmd,
-			screenName:            screenName,
-			World:                 world,
-		})
-	}
-
-	// players
-	g.adminlistPath = fmt.Sprintf("%s/adminlist.txt", g.clusterPath)
-	g.whitelistPath = fmt.Sprintf("%s/whitelist.txt", g.clusterPath)
-	g.blocklistPath = fmt.Sprintf("%s/blocklist.txt", g.clusterPath)
-	g.adminlist = getPlayerList(g.adminlistPath)
-	g.whitelist = getPlayerList(g.whitelistPath)
-	g.blocklist = getPlayerList(g.blocklistPath)
-
-	// mods
-	g.ugcPath = fmt.Sprintf("%s/dst/ugc_mods/%s", db.CurrentDir, g.clusterName)
-}
 
 // ============== //
 // modinfo.lua
@@ -222,7 +124,7 @@ func convertLuaValue(lv lua.LValue) any {
 func (mf *ModInfoParser) Parse(lang string) error {
 	var options []ConfigurationOption
 
-	L := lua.NewState()
+	L := utils.NewSafeLuaState()
 	defer L.Close()
 
 	L.SetGlobal("locale", lua.LString(lang))                                      // 设置语言
@@ -241,7 +143,7 @@ func (mf *ModInfoParser) Parse(lang string) error {
 
 	// 加载并执行 Lua 脚本
 	if err := L.DoString(mf.ModInfoLua); err != nil {
-		logger.Logger.Debug("执行modinfo.lua失败", "err", err)
+		logger.Logger.Debugf("执行modinfo.lua失败, 可能含有lua注入, err: %v", err)
 		return err
 	}
 
@@ -322,10 +224,10 @@ type ModORParser struct {
 	L *lua.LState
 }
 
-// NewModORParser 创建新的解析器
+// NewModORParser 创建新的解析器，使用沙箱化 Lua 状态
 func NewModORParser() *ModORParser {
 	return &ModORParser{
-		L: lua.NewState(),
+		L: utils.NewSafeLuaState(),
 	}
 }
 
@@ -339,7 +241,7 @@ func (p *ModORParser) close() {
 // Parse 解析Lua配置文件内容
 func (p *ModORParser) Parse(luaContent, lang string) (ModORCollection, error) {
 	if err := p.L.DoString(luaContent); err != nil {
-		logger.Logger.Debug("这里出问题?", "err", err)
+		logger.Logger.Warnf("解析模组配置失败，可能含有lua注入，终止：%v", err)
 		return nil, err
 	}
 
@@ -606,6 +508,37 @@ func (mc ModORCollection) ToLuaCode() string {
 	return builder.String()
 }
 
+// escapeLuaString 转义字符串中的特殊字符，防止Lua注入
+func escapeLuaString(s string) string {
+	var builder strings.Builder
+
+	for _, r := range s {
+		switch r {
+		case '\\':
+			builder.WriteString("\\\\")
+		case '"':
+			builder.WriteString("\\\"")
+		case '\n':
+			builder.WriteString("\\n")
+		case '\r':
+			builder.WriteString("\\r")
+		case '\t':
+			builder.WriteString("\\t")
+		case '\a':
+			builder.WriteString("\\a")
+		case '\b':
+			builder.WriteString("\\b")
+		case '\f':
+			builder.WriteString("\\f")
+		case '\v':
+			builder.WriteString("\\v")
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
 // formatLuaValue 将Go值格式化为Lua值
 func formatLuaValue(value any) string {
 	switch v := value.(type) {
@@ -618,7 +551,7 @@ func formatLuaValue(value any) string {
 		}
 		return strconv.FormatFloat(v, 'g', -1, 64)
 	case string:
-		return fmt.Sprintf("\"%s\"", v)
+		return fmt.Sprintf("\"%s\"", escapeLuaString(v))
 	case []any:
 		// 数组格式
 		var builder strings.Builder
@@ -644,32 +577,33 @@ func formatLuaValue(value any) string {
 			if isValidLuaIdentifier(key) {
 				builder.WriteString(fmt.Sprintf("%s=%s", key, formatLuaValue(item)))
 			} else {
-				builder.WriteString(fmt.Sprintf("[\"%s\"]=%s", key, formatLuaValue(item)))
+				builder.WriteString(fmt.Sprintf("[\"%s\"]=%s", escapeLuaString(key), formatLuaValue(item)))
 			}
 			first = false
 		}
 		builder.WriteString("}")
 		return builder.String()
 	default:
-		return fmt.Sprintf("\"%v\"", v)
+		return fmt.Sprintf("\"%s\"", escapeLuaString(fmt.Sprintf("%v", v)))
 	}
 }
 
-// isValidLuaIdentifier 检查字符串是否为有效的Lua标识符
+// isValidLuaIdentifier 检查字符串是否为有效的 Lua 标识符（仅 ASCII）
 func isValidLuaIdentifier(s string) bool {
 	if len(s) == 0 {
 		return false
 	}
 
-	// 第一个字符必须是字母或下划线
-	firstChar := rune(s[0])
-	if !unicode.IsLetter(firstChar) && firstChar != '_' {
+	// 第一个字符必须是 ASCII 字母或下划线
+	firstChar := s[0]
+	if !((firstChar >= 'a' && firstChar <= 'z') || (firstChar >= 'A' && firstChar <= 'Z') || firstChar == '_') {
 		return false
 	}
 
-	// 后续字符可以是字母、数字或下划线
-	for _, char := range s[1:] {
-		if !unicode.IsLetter(char) && !unicode.IsDigit(char) && char != '_' {
+	// 后续字符可以是 ASCII 字母、数字或下划线
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
 			return false
 		}
 	}
@@ -683,24 +617,24 @@ func formatLuaKey(s string) string {
 	}
 
 	// 数字开头
-	numRe := regexp.MustCompile(`^\d`)
-	if numRe.MatchString(s) {
-		return fmt.Sprintf("[\"%s\"]", s)
+	if s[0] >= '0' && s[0] <= '9' {
+		return fmt.Sprintf("[\"%s\"]", escapeLuaString(s))
 	}
 
-	// 正常变量
-	re := regexp.MustCompile(`[^a-zA-Z0-9_]`)
-	if re.MatchString(s) {
-		return fmt.Sprintf("[\"%s\"]", s)
+	// 检查是否包含非法标识符字符（Lua 标识符仅支持 ASCII）
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return fmt.Sprintf("[\"%s\"]", escapeLuaString(s))
+		}
 	}
 
 	return s
 }
 
-func downloadNotUGCMod(url string, id int) (error, int64) {
-	filename := strconv.Itoa(id) + ".zip"              // 临时zip文件名
-	filepath := fmt.Sprintf("dst/mods/%s", filename)   // 临时zip文件路径
-	modPath := fmt.Sprintf("dst/mods/workshop-%d", id) // mod路径
+func downloadNotUGCMod(url string, id int, notUgcPath string) (error, int64) {
+	filename := strconv.Itoa(id) + ".zip"                    // 临时zip文件名
+	filepath := fmt.Sprintf("%s/%s", notUgcPath, filename)   // 临时zip文件路径
+	modPath := fmt.Sprintf("%s/workshop-%d", notUgcPath, id) // mod路径
 
 	var modSize int64
 
@@ -715,7 +649,7 @@ func downloadNotUGCMod(url string, id int) (error, int64) {
 	defer out.Close()
 
 	client := &http.Client{
-		Timeout: utils.HttpTimeout * time.Second,
+		Timeout: constant.HttpTimeout * time.Second,
 	}
 
 	resp, err := client.Get(url)
@@ -726,12 +660,12 @@ func downloadNotUGCMod(url string, id int) (error, int64) {
 
 	// 检查HTTP响应状态码
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载mod失败，HTTP代码：" + resp.Status), modSize
+		return fmt.Errorf("下载mod失败，HTTP代码：%d", resp.StatusCode), modSize
 	}
 	// 将响应体写入文件
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return fmt.Errorf("下载mod失败，HTTP代码：" + err.Error()), modSize
+		return fmt.Errorf("下载mod失败: %s", err.Error()), modSize
 	}
 
 	modSize, err = utils.GetFileSize(filepath)
@@ -744,7 +678,7 @@ func downloadNotUGCMod(url string, id int) (error, int64) {
 	defer func(filename string) {
 		err := utils.RemoveFile(filename)
 		if err != nil {
-			logger.Logger.Warnf("删除临时文件失败：%s", err.Error())
+			logger.Logger.Warnf("删除临时文件失败：%v", err)
 		}
 	}(filepath)
 
@@ -770,19 +704,19 @@ func replaceDSTSOFile() {
 	var err error
 	err = utils.BashCMD("mv dst/bin/lib32/steamclient.so dst/bin/lib32/steamclient.so.bak")
 	if err != nil {
-		logger.Logger.Error("替换so文件失败", "err", err)
+		logger.Logger.Errorf("替换so文件失败, err: %v", err)
 	}
 	err = utils.BashCMD("cp steamcmd/linux32/steamclient.so dst/bin/lib32/steamclient.so")
 	if err != nil {
-		logger.Logger.Error("替换so文件失败", "err", err)
+		logger.Logger.Errorf("替换so文件失败, err: %v", err)
 	}
 	err = utils.BashCMD("mv dst/bin64/lib64/steamclient.so dst/bin64/lib64/steamclient.so.bak")
 	if err != nil {
-		logger.Logger.Error("替换so文件失败", "err", err)
+		logger.Logger.Errorf("替换so文件失败, err: %v", err)
 	}
 	err = utils.BashCMD("cp steamcmd/linux64/steamclient.so dst/bin64/lib64/steamclient.so")
 	if err != nil {
-		logger.Logger.Error("替换so文件失败", "err", err)
+		logger.Logger.Errorf("替换so文件失败, err: %v", err)
 	}
 }
 

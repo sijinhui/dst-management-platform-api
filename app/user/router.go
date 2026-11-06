@@ -1,20 +1,20 @@
 package user
 
 import (
+	"dst-management-platform-api/constant"
 	"dst-management-platform-api/middleware"
-	"dst-management-platform-api/utils"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	v := r.Group(utils.ApiVersion)
+	v := r.Group(constant.ApiVersion)
 	{
 		user := v.Group("user")
 		{
 			user.GET("/register", h.registerGet)
 			user.POST("/register", h.registerPost)
-			user.POST("/login", h.loginPost)
+			user.POST("/login", middleware.LoginRateLimit(), h.loginPost)
 			user.GET("/base", middleware.TokenCheck(), h.baseGet)
 			user.POST("/base", middleware.TokenCheck(), middleware.AdminOnly(), h.basePost)
 			user.PUT("/base", middleware.TokenCheck(), middleware.AdminOnly(), h.basePut)
@@ -22,6 +22,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.GET("/menu", middleware.TokenCheck(), h.menuGet)
 			user.GET("/list", middleware.TokenCheck(), middleware.AdminOnly(), h.userListGet)
 			user.PUT("/myself", middleware.TokenCheck(), h.myselfPut)
+			user.POST("/revoke", middleware.TokenCheck(), middleware.AdminOnly(), h.revokePost)
 		}
 	}
 }

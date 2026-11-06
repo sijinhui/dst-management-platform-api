@@ -1,48 +1,21 @@
 package tools
 
-import "dst-management-platform-api/utils"
+import (
+	"dst-management-platform-api/i18n"
+)
 
-type ExtendedI18n struct {
-	utils.BaseI18n
-}
-
-func NewExtendedI18n() *ExtendedI18n {
-	i := &ExtendedI18n{
-		BaseI18n: utils.BaseI18n{
-			ZH: make(map[string]string),
-			EN: make(map[string]string),
-		},
-	}
-
-	utils.I18nMutex.Lock()
-	defer utils.I18nMutex.Unlock()
-
-	for k, v := range utils.I18n.ZH {
-		i.ZH[k] = v
-	}
-	for k, v := range utils.I18n.EN {
-		i.EN[k] = v
-	}
-
-	i.ZH["get backup fail"] = "获取备份文件失败"
-	i.ZH["create backup fail"] = "创建备份文件失败"
-	i.ZH["create backup success"] = "创建成功"
-	i.ZH["restore fail"] = "恢复失败"
-	i.ZH["restore success"] = "恢复成功"
-	i.ZH["get setting fail"] = "获取定时通知设置失败"
-	i.ZH["generate map fail"] = "生成地图失败"
-	i.ZH["get snapshot fail"] = "获取备份文件失败"
-
-	i.EN["get backup fail"] = "get backup fail"
-	i.EN["create backup fail"] = "create backup fail"
-	i.EN["create backup success"] = "create success"
-	i.EN["restore fail"] = "restore fail"
-	i.EN["restore success"] = "restore success"
-	i.EN["get setting fail"] = "Get Announce Settings Fail"
-	i.EN["generate map fail"] = "generate map fail"
-	i.EN["get snapshot fail"] = "get snapshot fail"
-
-	return i
-}
-
-var message = NewExtendedI18n()
+var message = i18n.NewExtendedI18n(map[string]i18n.Text{
+	"get backup fail":                {ZH: "获取备份文件失败", EN: "get backup fail"},
+	"create backup fail":             {ZH: "创建备份文件失败", EN: "create backup fail"},
+	"create backup success":          {ZH: "创建成功", EN: "create success"},
+	"restore fail":                   {ZH: "恢复失败", EN: "restore fail"},
+	"restore success":                {ZH: "恢复成功", EN: "restore success"},
+	"map save not found":             {ZH: "存档不存在，请先启动一次世界", EN: "save file not found"},
+	"map parse fail":                 {ZH: "解析存档失败", EN: "parse save fail"},
+	"map busy":                       {ZH: "地图生成繁忙，请稍后重试", EN: "map generation is busy"},
+	"get snapshot fail":              {ZH: "获取游戏存档失败", EN: "Get Snapshot Fail"},
+	"embedding config incomplete":    {ZH: "嵌入模型配置不完整", EN: "Embedding model configuration is incomplete"},
+	"embedding base url invalid":     {ZH: "嵌入模型 Base URL 不合法", EN: "Embedding model Base URL is invalid"},
+	"embedding build not running":    {ZH: "当前没有正在进行的嵌入索引构建", EN: "No embedding index build is running"},
+	"embedding build cancel success": {ZH: "已取消嵌入索引构建", EN: "Embedding index build cancelled"},
+})

@@ -1,13 +1,16 @@
 package player
 
 import (
-	"dst-management-platform-api/database/db"
+	"dst-management-platform-api/cache"
+	"dst-management-platform-api/database/dao"
 	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/dst"
 	"dst-management-platform-api/logger"
 	"dst-management-platform-api/utils"
 	"net/http"
+	"sort"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,7 +21,7 @@ func (h *Handler) onlineGet(c *gin.Context) {
 	}
 	var reqForm ReqForm
 	if err := c.ShouldBindQuery(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 		return
 	}
@@ -33,18 +36,145 @@ func (h *Handler) onlineGet(c *gin.Context) {
 		return
 	}
 
-	db.PlayersStatisticMutex.Lock()
-	defer db.PlayersStatisticMutex.Unlock()
+	cache.PlayersStatisticMutex.Lock()
+	defer cache.PlayersStatisticMutex.Unlock()
 
-	var players []db.PlayerInfo
+	var players []cache.PlayerInfo
 
-	if len(db.PlayersStatistic[reqForm.RoomID]) > 0 {
-		players = db.PlayersStatistic[reqForm.RoomID][len(db.PlayersStatistic[reqForm.RoomID])-1].PlayerInfo
+	if len(cache.PlayersStatistic[reqForm.RoomID]) > 0 {
+		players = cache.PlayersStatistic[reqForm.RoomID][len(cache.PlayersStatistic[reqForm.RoomID])-1].PlayerInfo
 	} else {
-		players = []db.PlayerInfo{}
+		players = []cache.PlayerInfo{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": players})
+}
+
+func (h *Handler) ganttGet(c *gin.Context) {
+	type ReqForm struct {
+		RoomID    int `json:"roomID" form:"roomID"`
+		TimeRange int `json:"timeRange" form:"timeRange"` // 最近多少小时
+	}
+	var reqForm ReqForm
+	if err := c.ShouldBindQuery(&reqForm); err != nil {
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		return
+	}
+	if reqForm.RoomID <= 0 {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		return
+	}
+	if reqForm.TimeRange == 0 {
+		reqForm.TimeRange = 1
+	}
+	if reqForm.TimeRange < 1 || reqForm.TimeRange > 24*3650 {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		return
+	}
+	if !h.hasPermission(c, strconv.Itoa(reqForm.RoomID)) {
+		c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "permission needed"), "data": nil})
+		return
+	}
+
+	var globalSetting models.GlobalSetting
+	if err := h.globalSettingDao.GetGlobalSetting(&globalSetting); err != nil {
+		logger.Logger.Errorf("获取基本信息失败, err: %v", err)
+		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
+		return
+	}
+	intervalSeconds := globalSetting.PlayerGetFrequency
+	if intervalSeconds <= 0 {
+		intervalSeconds = 60
+	}
+
+	now := time.Now()
+	rangeStart := now.Add(-time.Duration(reqForm.TimeRange) * time.Hour).UnixMilli()
+	rangeEnd := now.UnixMilli()
+	intervalMillis := int64(intervalSeconds) * 1000
+
+	type ganttItem struct {
+		UID       string `json:"uid"`
+		Nickname  string `json:"nickname"`
+		Prefab    string `json:"prefab"`
+		StartTime int64  `json:"startTime"`
+		EndTime   int64  `json:"endTime"`
+		Duration  int64  `json:"duration"`
+	}
+
+	itemsByPlayer := make(map[string][]ganttItem)
+	cache.PlayersStatisticMutex.Lock()
+	snapshots := cache.PlayersStatistic[reqForm.RoomID]
+	for _, snapshot := range snapshots {
+		if snapshot.Timestamp <= 0 || snapshot.Timestamp > rangeEnd {
+			continue
+		}
+		start := snapshot.Timestamp
+		if start < rangeStart {
+			start = rangeStart
+		}
+		end := snapshot.Timestamp + intervalMillis
+		if end > rangeEnd {
+			end = rangeEnd
+		}
+		if start >= end {
+			continue
+		}
+
+		for _, player := range snapshot.PlayerInfo {
+			key := player.UID
+			if key == "" {
+				key = player.Nickname
+			}
+			if key == "" {
+				continue
+			}
+			items := itemsByPlayer[key]
+			item := ganttItem{
+				UID:       player.UID,
+				Nickname:  player.Nickname,
+				Prefab:    player.Prefab,
+				StartTime: start,
+				EndTime:   end,
+				Duration:  (end - start) / 1000,
+			}
+			if len(items) > 0 {
+				last := &items[len(items)-1]
+				if last.EndTime >= item.StartTime {
+					if item.EndTime > last.EndTime {
+						last.EndTime = item.EndTime
+					}
+					if item.Nickname != "" {
+						last.Nickname = item.Nickname
+					}
+					if item.Prefab != "" {
+						last.Prefab = item.Prefab
+					}
+					last.Duration = (last.EndTime - last.StartTime) / 1000
+					itemsByPlayer[key] = items
+					continue
+				}
+			}
+			itemsByPlayer[key] = append(items, item)
+		}
+	}
+	cache.PlayersStatisticMutex.Unlock()
+
+	data := make([]ganttItem, 0)
+	for _, items := range itemsByPlayer {
+		data = append(data, items...)
+	}
+	sort.Slice(data, func(i, j int) bool {
+		if data[i].StartTime != data[j].StartTime {
+			return data[i].StartTime < data[j].StartTime
+		}
+		if data[i].Nickname != data[j].Nickname {
+			return data[i].Nickname < data[j].Nickname
+		}
+		return data[i].UID < data[j].UID
+	})
+
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": data})
 }
 
 func (h *Handler) listPost(c *gin.Context) {
@@ -57,7 +187,7 @@ func (h *Handler) listPost(c *gin.Context) {
 
 	var reqForm ReqForm
 	if err := c.ShouldBindJSON(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 		return
 	}
@@ -72,33 +202,67 @@ func (h *Handler) listPost(c *gin.Context) {
 		return
 	}
 
-	room, worlds, roomSetting, err := h.fetchGameInfo(reqForm.RoomID)
+	room, worlds, roomSetting, err := dao.FetchGameInfo(reqForm.RoomID)
 	if err != nil {
-		logger.Logger.Error("获取基本信息失败", "err", err)
+		logger.Logger.Errorf("获取基本信息失败, err: %v", err)
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
 		return
 	}
 
 	game := dst.NewGameController(room, worlds, roomSetting, c.Request.Header.Get("X-I18n-Lang"))
 
-	if reqForm.ActionType == "add" {
+	switch reqForm.ActionType {
+	case "add":
 		err = game.AddPlayerList(reqForm.UIDS, reqForm.ListType)
 		if err != nil {
-			logger.Logger.Info("修改player list失败", "err", err)
+			logger.Logger.Infof("修改player list失败: %v", err)
 			c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "add fail"), "data": nil})
 			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"code": 200, "message": message.Get(c, "add success"), "data": nil})
-	} else {
+	case "delete":
+		if len(reqForm.UIDS) == 0 || reqForm.UIDS[0] == "" {
+			c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+			return
+		}
 		err = game.RemovePlayerList(reqForm.UIDS[0], reqForm.ListType)
 		if err != nil {
-			logger.Logger.Info("修改player list失败", "err", err)
+			logger.Logger.Infof("修改player list失败: %v", err)
 			c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "delete fail"), "data": nil})
 			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"code": 200, "message": message.Get(c, "delete success"), "data": nil})
+	case "deleteAll":
+		err = game.RemovePlayerListAll(reqForm.ListType)
+		if err != nil {
+			logger.Logger.Infof("删除player list失败: %v", err)
+			c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "delete fail"), "data": nil})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"code": 200, "message": message.Get(c, "delete success"), "data": nil})
+	case "import":
+		var uids []string
+
+		uids, err = getPublicBlockList()
+		if err != nil {
+			logger.Logger.Error(err.Error())
+		}
+
+		err = game.AddPlayerList(uids, reqForm.ListType)
+		if err != nil {
+			logger.Logger.Infof("修改player list失败: %v", err)
+			c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "add fail"), "data": nil})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"code": 200, "message": message.Get(c, "add success"), "data": nil})
+	default:
+		logger.Logger.Infof("请求参数错误, api: %s", c.Request.URL.Path)
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		return
 	}
 }
 
@@ -109,7 +273,7 @@ func (h *Handler) listGet(c *gin.Context) {
 	}
 	var reqForm ReqForm
 	if err := c.ShouldBindQuery(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 		return
 	}
@@ -124,49 +288,59 @@ func (h *Handler) listGet(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "permission needed"), "data": nil})
 		return
 	}
-	room, worlds, roomSetting, err := h.fetchGameInfo(reqForm.RoomID)
+	room, worlds, roomSetting, err := dao.FetchGameInfo(reqForm.RoomID)
 	if err != nil {
-		logger.Logger.Error("获取基本信息失败", "err", err)
+		logger.Logger.Errorf("获取基本信息失败, err: %v", err)
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
 		return
 	}
 
 	game := dst.NewGameController(room, worlds, roomSetting, c.Request.Header.Get("X-I18n-Lang"))
 	list := game.GetPlayerList(reqForm.ListType)
-	logger.Logger.Debug(utils.StructToFlatString(list))
+	//logger.Logger.Debug(utils.StructToFlatString(list))
 
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": list})
 }
 
 func (h *Handler) uidMapGet(c *gin.Context) {
 	type ReqForm struct {
-		RoomID int `json:"roomID" form:"roomID"`
+		RoomID   int    `json:"roomID" form:"roomID"`
+		Q        string `json:"q" form:"q"`
+		Page     int    `json:"page" form:"page"`
+		PageSize int    `json:"pageSize" form:"pageSize"`
 	}
-	var reqForm ReqForm
+	var (
+		reqForm ReqForm
+		data    dao.PaginatedResult[models.UidMap]
+	)
 	if err := c.ShouldBindQuery(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
-		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": data})
 		return
 	}
 
 	if reqForm.RoomID == 0 {
-		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": data})
 		return
 	}
 
 	if !h.hasPermission(c, strconv.Itoa(reqForm.RoomID)) {
-		c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "permission needed"), "data": nil})
+		c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "permission needed"), "data": data})
 		return
 	}
 
-	uidMap, err := h.uidMapDao.GetUidMapByRoomID(reqForm.RoomID)
+	uidMap, err := h.uidMapDao.ListUidMaps(reqForm.RoomID, reqForm.Q, reqForm.Page, reqForm.PageSize)
 	if err != nil {
-		logger.Logger.Error("获取uidmap失败", "err", err)
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
+		logger.Logger.Errorf("获取uidmap失败, err: %v", err)
+		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": data})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": uidMap})
+	data = *uidMap
+	if data.Data == nil {
+		data.Data = []models.UidMap{}
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": data})
 }
 
 func (h *Handler) statisticsOnlineTimeGet(c *gin.Context) {
@@ -175,7 +349,7 @@ func (h *Handler) statisticsOnlineTimeGet(c *gin.Context) {
 	}
 	var reqForm ReqForm
 	if err := c.ShouldBindQuery(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 		return
 	}
@@ -190,10 +364,10 @@ func (h *Handler) statisticsOnlineTimeGet(c *gin.Context) {
 		return
 	}
 
-	db.PlayersOnlineTimeMutex.Lock()
-	defer db.PlayersOnlineTimeMutex.Unlock()
+	cache.PlayersOnlineTimeMutex.Lock()
+	defer cache.PlayersOnlineTimeMutex.Unlock()
 
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": db.PlayersOnlineTime[reqForm.RoomID]})
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": cache.PlayersOnlineTime[reqForm.RoomID]})
 }
 
 func (h *Handler) statisticsPlayerCountGet(c *gin.Context) {
@@ -203,7 +377,7 @@ func (h *Handler) statisticsPlayerCountGet(c *gin.Context) {
 	}
 	var reqForm ReqForm
 	if err := c.ShouldBindQuery(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 		return
 	}
@@ -218,14 +392,67 @@ func (h *Handler) statisticsPlayerCountGet(c *gin.Context) {
 		return
 	}
 
-	db.PlayersStatisticMutex.Lock()
-	defer db.PlayersStatisticMutex.Unlock()
+	cache.PlayersStatisticMutex.Lock()
+	defer cache.PlayersStatisticMutex.Unlock()
 
 	var globalSettings models.GlobalSetting
 
 	err := h.globalSettingDao.GetGlobalSetting(&globalSettings)
 	if err != nil {
-		logger.Logger.Error("获取基本信息失败", "err", err)
+		logger.Logger.Errorf("获取基本信息失败, err: %v", err)
+		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
+		return
+	}
+
+	if globalSettings.PlayerGetFrequency <= 0 {
+		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
+		return
+	}
+
+	if reqForm.TimeRange <= 0 {
+		reqForm.TimeRange = 24 * 60 * 60
+	}
+
+	dataCount := int(reqForm.TimeRange / globalSettings.PlayerGetFrequency) // 返回多少个数据
+	dataLength := len(cache.PlayersStatistic[reqForm.RoomID])               // 当前房间统计数据的个数
+
+	if dataLength > dataCount {
+		c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": cache.PlayersStatistic[reqForm.RoomID][dataLength-dataCount:]})
+	} else {
+		c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": cache.PlayersStatistic[reqForm.RoomID]})
+	}
+}
+
+func (h *Handler) statisticsPlayerCountV2Get(c *gin.Context) {
+	type ReqForm struct {
+		RoomID    int `json:"roomID" form:"roomID"`
+		TimeRange int `json:"timeRange" form:"timeRange"` // 前端传回来需要多少秒的数据
+	}
+	var reqForm ReqForm
+	if err := c.ShouldBindQuery(&reqForm); err != nil {
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		return
+	}
+
+	if reqForm.RoomID == 0 {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
+		return
+	}
+
+	if !h.hasPermission(c, strconv.Itoa(reqForm.RoomID)) {
+		c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "permission needed"), "data": nil})
+		return
+	}
+
+	cache.PlayersStatisticMutex.Lock()
+	defer cache.PlayersStatisticMutex.Unlock()
+
+	var globalSettings models.GlobalSetting
+
+	err := h.globalSettingDao.GetGlobalSetting(&globalSettings)
+	if err != nil {
+		logger.Logger.Errorf("获取基本信息失败, err: %v", err)
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
 		return
 	}
@@ -235,13 +462,30 @@ func (h *Handler) statisticsPlayerCountGet(c *gin.Context) {
 	}
 
 	dataCount := int(reqForm.TimeRange / globalSettings.PlayerGetFrequency) // 返回多少个数据
-	dataLength := len(db.PlayersStatistic[reqForm.RoomID])                  // 当前房间统计数据的个数
+	dataLength := len(cache.PlayersStatistic[reqForm.RoomID])               // 当前房间统计数据的个数
+
+	var neededStatistics []cache.Players
 
 	if dataLength > dataCount {
-		c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": db.PlayersStatistic[reqForm.RoomID][dataLength-dataCount:]})
+		neededStatistics = cache.PlayersStatistic[reqForm.RoomID][dataLength-dataCount:]
 	} else {
-		c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": db.PlayersStatistic[reqForm.RoomID]})
+		neededStatistics = cache.PlayersStatistic[reqForm.RoomID]
 	}
+
+	type dataItem struct {
+		Count     int   `json:"count"`
+		Timestamp int64 `json:"timestamp"`
+	}
+	var data []dataItem
+
+	for _, players := range neededStatistics {
+		data = append(data, dataItem{
+			Count:     len(players.PlayerInfo),
+			Timestamp: players.Timestamp,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "success", "data": data})
 }
 
 func (h *Handler) chatGet(c *gin.Context) {
@@ -252,7 +496,7 @@ func (h *Handler) chatGet(c *gin.Context) {
 	}
 	var reqForm ReqForm
 	if err := c.ShouldBindQuery(&reqForm); err != nil {
-		logger.Logger.Info("请求参数错误", "err", err, "api", c.Request.URL.Path)
+		logger.Logger.Infof("请求参数错误: %v, api: %s", err, c.Request.URL.Path)
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": message.Get(c, "bad request"), "data": nil})
 		return
 	}
@@ -267,9 +511,9 @@ func (h *Handler) chatGet(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"code": 201, "message": message.Get(c, "permission needed"), "data": nil})
 		return
 	}
-	room, worlds, roomSetting, err := h.fetchGameInfo(reqForm.RoomID)
+	room, worlds, roomSetting, err := dao.FetchGameInfo(reqForm.RoomID)
 	if err != nil {
-		logger.Logger.Error("获取基本信息失败", "err", err)
+		logger.Logger.Errorf("获取基本信息失败, err: %v", err)
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": message.Get(c, "database error"), "data": nil})
 		return
 	}

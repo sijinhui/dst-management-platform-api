@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"dst-management-platform-api/database/dao"
 	"dst-management-platform-api/database/models"
 	"dst-management-platform-api/dst"
 	"dst-management-platform-api/logger"
@@ -11,11 +12,27 @@ import (
 
 var Jobs []JobConfig
 
+const (
+	SystemMetricsGetInInterval      = 1 // 1分钟
+	RoomMetricsGetInInterval        = 1 // 1分钟
+	InternetIPUpdateInterval        = 6 // 6小时
+	ModDownloadCleanInterval        = 1 // 1分钟
+	GameServerVersionUpdateInterval = 1 // 1小时
+)
+
+// 监控数据的默认保留时长（小时），与全局设置中的系统监控数据保留时长保持一致
+const defaultMetricsSaveHours = 6
+
+const (
+	PlayerUpdateModFalseInterval = 60 // 60秒
+	PlayerUpdateModTrueInterval  = 10 // 10秒
+)
+
 func initJobs() {
 	var globalSetting models.GlobalSetting
 	err := DBHandler.globalSettingDao.GetGlobalSetting(&globalSetting)
 	if err != nil {
-		logger.Logger.Error("初始化定时任务失败", "err", err)
+		logger.Logger.Errorf("初始化定时任务失败, err: %v", err)
 		panic("初始化定时任务失败")
 	}
 
@@ -31,14 +48,16 @@ func initJobs() {
 	})
 
 	// 系统监控
-	Jobs = append(Jobs, JobConfig{
-		Name:     "systemMetricsGet",
-		Func:     SystemMetricsGet,
-		Args:     []any{globalSetting.SysMetricsSetting},
-		TimeType: MinuteType,
-		Interval: 1,
-		DayAt:    "",
-	})
+	if globalSetting.SysMetricsEnable {
+		Jobs = append(Jobs, JobConfig{
+			Name:     "systemMetricsGet",
+			Func:     SystemMetricsGet,
+			Args:     []any{globalSetting.SysMetricsSetting},
+			TimeType: MinuteType,
+			Interval: SystemMetricsGetInInterval,
+			DayAt:    "",
+		})
+	}
 
 	// 游戏更新
 	Jobs = append(Jobs, JobConfig{
@@ -56,7 +75,7 @@ func initJobs() {
 		Func:     InternetIPUpdate,
 		Args:     nil,
 		TimeType: HourType,
-		Interval: 6,
+		Interval: InternetIPUpdateInterval,
 		DayAt:    "",
 	})
 
@@ -66,14 +85,24 @@ func initJobs() {
 		Func:     ModDownloadClean,
 		Args:     nil,
 		TimeType: MinuteType,
-		Interval: 1,
+		Interval: ModDownloadCleanInterval,
+		DayAt:    "",
+	})
+
+	// 游戏版本获取
+	Jobs = append(Jobs, JobConfig{
+		Name:     "GameServerVersionUpdate",
+		Func:     ServerVersionGet,
+		Args:     nil,
+		TimeType: HourType,
+		Interval: GameServerVersionUpdateInterval,
 		DayAt:    "",
 	})
 
 	// 房间定时任务
 	roomBasic, err := DBHandler.roomDao.GetRoomBasic()
 	if err != nil {
-		logger.Logger.Error("获取房间失败", "err", err)
+		logger.Logger.Errorf("获取房间失败, err: %v", err)
 		return
 	}
 	for _, r := range *roomBasic {
@@ -82,9 +111,9 @@ func initJobs() {
 			continue
 		}
 
-		room, worlds, roomSetting, err := fetchGameInfo(r.RoomID)
+		room, worlds, roomSetting, err := dao.FetchGameInfo(r.RoomID)
 		if err != nil {
-			logger.Logger.Error("获取房间设置失败", "err", err)
+			logger.Logger.Errorf("获取房间设置失败, err: %v", err)
 			continue
 		}
 		game := dst.NewGameController(room, worlds, roomSetting, "zh")
@@ -96,19 +125,19 @@ func initJobs() {
 		if roomSetting.BackupEnable {
 			var backupSettings []BackupSetting
 			if err := json.Unmarshal([]byte(roomSetting.BackupSetting), &backupSettings); err != nil {
-				logger.Logger.Error("获取房间备份设置失败", "err", err)
-				continue
-			}
-			for i, backupSetting := range backupSettings {
-				// 房间id-time_index-Backup
-				Jobs = append(Jobs, JobConfig{
-					Name:     fmt.Sprintf("%d-%d-Backup", room.ID, i),
-					Func:     Backup,
-					Args:     []any{game},
-					TimeType: DayType,
-					Interval: 0,
-					DayAt:    backupSetting.Time,
-				})
+				logger.Logger.Errorf("获取房间备份设置失败, err: %v", err)
+			} else {
+				for i, backupSetting := range backupSettings {
+					// 房间id-time_index-Backup
+					Jobs = append(Jobs, JobConfig{
+						Name:     fmt.Sprintf("%d-%d-Backup", room.ID, i),
+						Func:     Backup,
+						Args:     []any{game},
+						TimeType: DayType,
+						Interval: 0,
+						DayAt:    backupSetting.Time,
+					})
+				}
 			}
 		}
 		// 备份清理 30
@@ -133,6 +162,26 @@ func initJobs() {
 				DayAt:    roomSetting.RestartSetting,
 			})
 		}
+		// 重置 {"force": false, "time": "06:10:00", "days": 3}
+		if roomSetting.ResetEnable {
+			var resetSetting struct {
+				Force bool   `json:"force"`
+				Time  string `json:"time"`
+				Days  int    `json:"days"`
+			}
+			if err := json.Unmarshal([]byte(roomSetting.ResetSetting), &resetSetting); err != nil {
+				logger.Logger.Errorf("获取自动重置设置失败, err: %v", err)
+			} else {
+				Jobs = append(Jobs, JobConfig{
+					Name:     fmt.Sprintf("%d-Reset", room.ID),
+					Func:     Reset,
+					Args:     []any{game, room.ID, resetSetting.Force, resetSetting.Days},
+					TimeType: DayType,
+					Interval: 0,
+					DayAt:    resetSetting.Time,
+				})
+			}
+		}
 		// 自动开启关闭游戏 {"start":"07:00:00","stop":"01:00:00"}
 		if roomSetting.ScheduledStartStopEnable {
 			type ScheduledStartStopSetting struct {
@@ -141,25 +190,25 @@ func initJobs() {
 			}
 			var scheduledStartStopSetting ScheduledStartStopSetting
 			if err := json.Unmarshal([]byte(roomSetting.ScheduledStartStopSetting), &scheduledStartStopSetting); err != nil {
-				logger.Logger.Error("获取自动开启关闭游戏设置失败", "err", err)
-				continue
+				logger.Logger.Errorf("获取自动开启关闭游戏设置失败, err: %v", err)
+			} else {
+				Jobs = append(Jobs, JobConfig{
+					Name:     fmt.Sprintf("%d-ScheduledStart", room.ID),
+					Func:     ScheduledStart,
+					Args:     []any{game},
+					TimeType: DayType,
+					Interval: 0,
+					DayAt:    scheduledStartStopSetting.Start,
+				})
+				Jobs = append(Jobs, JobConfig{
+					Name:     fmt.Sprintf("%d-ScheduledStop", room.ID),
+					Func:     ScheduledStop,
+					Args:     []any{game},
+					TimeType: DayType,
+					Interval: 0,
+					DayAt:    scheduledStartStopSetting.Stop,
+				})
 			}
-			Jobs = append(Jobs, JobConfig{
-				Name:     fmt.Sprintf("%d-ScheduledStart", room.ID),
-				Func:     ScheduledStart,
-				Args:     []any{game},
-				TimeType: DayType,
-				Interval: 0,
-				DayAt:    scheduledStartStopSetting.Start,
-			})
-			Jobs = append(Jobs, JobConfig{
-				Name:     fmt.Sprintf("%d-ScheduledStop", room.ID),
-				Func:     ScheduledStop,
-				Args:     []any{game},
-				TimeType: DayType,
-				Interval: 0,
-				DayAt:    scheduledStartStopSetting.Stop,
-			})
 		}
 		// 自动保活
 		if roomSetting.KeepaliveEnable {
@@ -172,24 +221,58 @@ func initJobs() {
 				DayAt:    "",
 			})
 		}
+		// 房间资源监控
+		if roomSetting.RoomMetricsEnable {
+			Jobs = append(Jobs, JobConfig{
+				Name:     fmt.Sprintf("%d-RoomMetrics", room.ID),
+				Func:     RoomMetricsGet,
+				Args:     []any{game, room.ID},
+				TimeType: MinuteType,
+				Interval: RoomMetricsGetInInterval,
+				DayAt:    "",
+			})
+		}
 		// 定时通知 [{id: '', content: '', interval: 0, status: false}]
 		var announces []AnnounceSetting
-		if err = json.Unmarshal([]byte(roomSetting.AnnounceSetting), &announces); err != nil {
-			logger.Logger.Error("获取定时通知设置失败", "err", err)
-			continue
+		announceSetting := roomSetting.AnnounceSetting
+		if strings.TrimSpace(announceSetting) == "" {
+			announceSetting = "[]"
 		}
-		for _, announce := range announces {
-			if announce.Status {
-				// 注意，-为分隔符，需要删除uuid中的-
-				Jobs = append(Jobs, JobConfig{
-					Name:     fmt.Sprintf("%d-%s-Announce", room.ID, strings.ReplaceAll(announce.ID, "-", "")),
-					Func:     Announce,
-					Args:     []any{game, announce.Content},
-					TimeType: SecondType,
-					Interval: announce.Interval,
-					DayAt:    "",
-				})
+		if err := json.Unmarshal([]byte(announceSetting), &announces); err != nil {
+			logger.Logger.Errorf("获取定时通知设置失败, err: %v", err)
+		} else {
+			for _, announce := range announces {
+				if announce.Status {
+					// 注意，-为分隔符，需要删除uuid中的-
+					Jobs = append(Jobs, JobConfig{
+						Name:     fmt.Sprintf("%d-%s-Announce", room.ID, strings.ReplaceAll(announce.ID, "-", "")),
+						Func:     Announce,
+						Args:     []any{game, announce.Content},
+						TimeType: SecondType,
+						Interval: announce.Interval,
+						DayAt:    "",
+					})
+				}
 			}
+		}
+		// 玩家更新模组
+		if roomSetting.PlayerUpdateModEnable {
+			Jobs = append(Jobs, JobConfig{
+				Name:     fmt.Sprintf("%d-PlayerUpdateModFalse", room.ID),
+				Func:     PlayerUpdateMod,
+				Args:     []any{game, false},
+				TimeType: SecondType,
+				Interval: PlayerUpdateModFalseInterval,
+				DayAt:    "",
+			})
+			Jobs = append(Jobs, JobConfig{
+				Name:     fmt.Sprintf("%d-PlayerUpdateModTrue", room.ID),
+				Func:     PlayerUpdateMod,
+				Args:     []any{game, true},
+				TimeType: SecondType,
+				Interval: PlayerUpdateModTrueInterval,
+				DayAt:    "",
+			})
 		}
 	}
 }

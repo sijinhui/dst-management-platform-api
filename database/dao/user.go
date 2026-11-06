@@ -23,6 +23,7 @@ func (d *UserDAO) GetUserByUsername(username string) (*models.User, error) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return &user, nil
 	}
+
 	return &user, err
 }
 
@@ -38,13 +39,32 @@ func (d *UserDAO) ListUsers(q string, page, pageSize int) (*PaginatedResult[mode
 		args = []any{searchUsername, searchNickname}
 	}
 
-	rooms, err := d.Query(page, pageSize, condition, args...)
-	return rooms, err
+	users, err := d.Query(page, pageSize, condition, args...)
+
+	return users, err
 }
 
 func (d *UserDAO) UpdateUser(user *models.User) error {
 	err := d.db.Save(user).Error
+
 	return err
+}
+
+func (d *UserDAO) UpdatePassword(username, password, passwordVersion string) error {
+	result := d.db.Model(&models.User{}).
+		Where("username = ?", username).
+		Updates(map[string]any{
+			"password":         password,
+			"password_version": passwordVersion,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	return nil
 }
 
 func (d *UserDAO) GetNonAdminUsers() (*[]models.User, error) {
@@ -52,4 +72,9 @@ func (d *UserDAO) GetNonAdminUsers() (*[]models.User, error) {
 	err := d.db.Where("role != 'admin'").Find(&users).Error
 
 	return &users, err
+}
+
+// DeleteUser 删除本地用户，仅用于首次云登录创建账号失败后的补偿。
+func (d *UserDAO) DeleteUser(username string) error {
+	return d.db.Where("username = ?", username).Delete(&models.User{}).Error
 }

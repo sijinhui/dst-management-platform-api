@@ -1,8 +1,8 @@
 package dst
 
 import (
-	"dst-management-platform-api/logger"
-	"dst-management-platform-api/utils"
+	"context"
+	"dst-management-platform-api/database/models"
 )
 
 // SaveAll 保存所有配置文件
@@ -126,6 +126,18 @@ func (g *Game) ModDelete(modID int, fileURL string) error {
 	return g.deleteMod(modID, fileURL)
 }
 
+// ModDeleteMulti 批量删除mod
+func (g *Game) ModDeleteMulti(mods []DeleteModInfo) error {
+	for _, mod := range mods {
+		err := g.deleteMod(mod.ID, mod.FileUrl)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // LogContent 获取日志
 func (g *Game) LogContent(logType string, id, lines int) []string {
 	return g.getLogContent(logType, id, lines)
@@ -206,11 +218,16 @@ func (g *Game) RemovePlayerList(uid, listType string) error {
 	return g.removePlayerList(uid, listType)
 }
 
+// RemovePlayerListAll 清空三个名单
+func (g *Game) RemovePlayerListAll(listType string) error {
+	return g.removePlayerListAll(listType)
+}
+
 // GetPlayerList 获取三个名单
 func (g *Game) GetPlayerList(listType string) []string {
 	switch listType {
 	case "adminlist":
-		logger.Logger.Debug(utils.StructToFlatString(g.adminlist))
+		//logger.Logger.Debug(utils.StructToFlatString(g.adminlist))
 		return g.adminlist
 	case "blocklist":
 		return g.blocklist
@@ -219,31 +236,6 @@ func (g *Game) GetPlayerList(listType string) []string {
 	default:
 		return []string{}
 	}
-}
-
-// GenerateBackgroundMap filepath: 最新的存档文件 返回背景地图base64
-func (g *Game) GenerateBackgroundMap(worldID int) (MapData, error) {
-	return g.generateBackgroundMap(worldID)
-}
-
-// CoordinateToPx 返回地图上的xy坐标
-func (g *Game) CoordinateToPx(size, a, b int) (int, int) {
-	return coordinateToPx(size, a, b)
-}
-
-// GetCoordinate 获取游戏内prefab的坐标
-func (g *Game) GetCoordinate(cmd string, worldID int) (int, int, error) {
-	return g.getCoordinate(cmd, worldID)
-}
-
-// CountPrefabs 统计指定世界prefab的个数
-func (g *Game) CountPrefabs(worldID int) []PrefabItem {
-	return g.countPrefabs(worldID)
-}
-
-// PlayerPosition 获取玩家实时坐标
-func (g *Game) PlayerPosition(worldID int) []PlayerPosition {
-	return g.playerPosition(worldID)
 }
 
 // GetSnapshot 获取饥荒存档文件
@@ -261,6 +253,32 @@ func (g *Game) DeleteAcf() error {
 	return g.deleteAcf()
 }
 
+// ChatMessages 玩家聊天列表
 func (g *Game) ChatMessages(lines int, needTime bool) ([]ChatMessage, error) {
 	return g.chatMessages(lines, needTime)
+}
+
+// TmiConsoleCmd Tmi插件执行命令
+func (g *Game) TmiConsoleCmd(t, uid, prefab string, num, worldID int) error {
+	return g.tmiConsoleCmd(t, uid, prefab, num, worldID)
+}
+
+// TailChatLog 先输出聊天日志的最后 lines 行，之后持续输出新写入的完整行。
+// 监听的是日志所在目录，游戏重启导致日志被截断、删除或替换后会自动重新打开文件。
+// 调用方应在不再需要日志时取消 ctx，并持续消费 output，避免阻塞日志读取。
+func (g *Game) TailChatLog(ctx context.Context, lines int, output chan<- string) error {
+	return g.tailChatLog(ctx, lines, output)
+}
+
+// RoomID 返回房间 ID
+func (g *Game) RoomID() int {
+	return g.room.ID
+}
+
+// Worlds 返回世界信息
+func (g *Game) Worlds() []models.World {
+	original := *g.worlds
+	copySlice := make([]models.World, len(original))
+	copy(copySlice, original)
+	return copySlice
 }
